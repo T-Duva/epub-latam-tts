@@ -69,8 +69,8 @@ fun LibraryScreen(
                 .padding(16.dp),
         ) {
             Text(
-                "Importá un EPUB y escuchalo en español latino. " +
-                    "Con API key de Google Cloud usa voz Neural; sin key, TTS del sistema (es-MX).",
+                "Importá un EPUB y escuchalo con voz neural IA (español México). " +
+                    "Respeta puntos y comas. Necesita internet.",
                 style = MaterialTheme.typography.bodyMedium,
             )
             Spacer(Modifier.height(12.dp))

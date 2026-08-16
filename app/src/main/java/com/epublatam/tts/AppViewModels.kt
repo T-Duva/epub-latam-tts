@@ -25,7 +25,7 @@ data class ReaderUiState(
     val epub: EpubBook? = null,
     val chapterIndex: Int = 0,
     val isPlaying: Boolean = false,
-    val rate: Float = 1.0f,
+    val rate: Float = 0.95f,
     val status: TtsStatus? = null,
     val error: String? = null,
     val loading: Boolean = false,
