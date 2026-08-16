@@ -1,0 +1,8 @@
+## Copia este archivo a local.properties y completa los valores.
+## local.properties NO se sube a git.
+
+sdk.dir=C\:\\Users\\Usuario\\AppData\\Local\\Android\\Sdk
+
+## API key de Google Cloud Text-to-Speech (opcional pero recomendada).
+## Sin key, la app usa solo el TTS del sistema (es-MX).
+GCS_TTS_API_KEY=tu_api_key_aqui
