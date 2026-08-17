@@ -13,3 +13,6 @@
 app/release/
 *.keystore
 secrets.properties
+
+test-dalia.mp3
+*.mp3
