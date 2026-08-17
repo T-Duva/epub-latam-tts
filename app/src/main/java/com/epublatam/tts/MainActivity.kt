@@ -24,6 +24,7 @@ import androidx.navigation.compose.rememberNavController
 import com.epublatam.tts.data.BookMeta
 import com.epublatam.tts.ui.LibraryScreen
 import com.epublatam.tts.ui.ReaderScreen
+import com.epublatam.tts.update.InstallNeed
 
 class MainActivity : ComponentActivity() {
     private val libraryVm: LibraryViewModel by viewModels {
@@ -39,6 +40,12 @@ class MainActivity : ComponentActivity() {
         ActivityResultContracts.OpenDocument(),
     ) { uri ->
         if (uri != null) libraryVm.importEpub(uri)
+    }
+
+    private val requestInstallPermission = registerForActivityResult(
+        ActivityResultContracts.StartActivityForResult(),
+    ) {
+        libraryVm.onReturnedFromPermissionSettings()
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -59,6 +66,7 @@ class MainActivity : ComponentActivity() {
                     val message by libraryVm.message.collectAsState()
                     val updateInfo by libraryVm.updateAvailable.collectAsState()
                     val updateStatus by libraryVm.updateStatus.collectAsState()
+                    val installNeed by libraryVm.needsInstallPermission.collectAsState()
                     var selected by remember { mutableStateOf<BookMeta?>(null) }
 
                     NavHost(navController = nav, startDestination = "library") {
@@ -69,6 +77,7 @@ class MainActivity : ComponentActivity() {
                                 message = message,
                                 updateInfo = updateInfo,
                                 updateStatus = updateStatus,
+                                needsPermission = installNeed is InstallNeed.Permission,
                                 onAdd = {
                                     pickEpub.launch(
                                         arrayOf("application/epub+zip", "application/octet-stream", "*/*"),
@@ -81,6 +90,10 @@ class MainActivity : ComponentActivity() {
                                 onDelete = { libraryVm.deleteBook(it.id) },
                                 onDismissMessage = { libraryVm.clearMessage() },
                                 onInstallUpdate = { libraryVm.installUpdate(it) },
+                                onGrantInstallPermission = {
+                                    requestInstallPermission.launch(libraryVm.openPermissionSettings())
+                                },
+                                onDownloadInBrowser = { libraryVm.downloadInBrowser(it) },
                             )
                         }
                         composable("reader") {
@@ -120,5 +133,10 @@ class MainActivity : ComponentActivity() {
                 }
             }
         }
+    }
+
+    override fun onResume() {
+        super.onResume()
+        libraryVm.onReturnedFromPermissionSettings()
     }
 }

@@ -52,11 +52,14 @@ fun LibraryScreen(
     message: String?,
     updateInfo: UpdateInfo?,
     updateStatus: String?,
+    needsPermission: Boolean,
     onAdd: () -> Unit,
     onOpen: (BookMeta) -> Unit,
     onDelete: (BookMeta) -> Unit,
     onDismissMessage: () -> Unit,
     onInstallUpdate: (UpdateInfo) -> Unit,
+    onGrantInstallPermission: () -> Unit,
+    onDownloadInBrowser: (UpdateInfo) -> Unit,
 ) {
     Scaffold(
         topBar = { TopAppBar(title = { Text("EPUB voz argentina") }) },
@@ -83,8 +86,18 @@ fun LibraryScreen(
                             Text(it, style = MaterialTheme.typography.bodySmall)
                         }
                         Spacer(Modifier.height(8.dp))
+                        if (needsPermission) {
+                            Button(onClick = onGrantInstallPermission) {
+                                Text("Dar permiso e instalar")
+                            }
+                            Spacer(Modifier.height(6.dp))
+                        }
                         Button(onClick = { onInstallUpdate(info) }) {
-                            Text("Actualizar en la app")
+                            Text(if (needsPermission) "Reintentar instalación" else "Actualizar")
+                        }
+                        Spacer(Modifier.height(6.dp))
+                        Button(onClick = { onDownloadInBrowser(info) }) {
+                            Text("Abrir descarga en el navegador")
                         }
                     }
                 }

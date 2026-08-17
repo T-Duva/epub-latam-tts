@@ -25,6 +25,11 @@ data class UpdateInfo(
     val notes: String,
 )
 
+sealed class InstallNeed {
+    data object None : InstallNeed()
+    data class Permission(val apk: File, val info: UpdateInfo) : InstallNeed()
+}
+
 class AppUpdater(private val app: Application) {
     private val client = OkHttpClient.Builder()
         .connectTimeout(30, TimeUnit.SECONDS)
@@ -36,6 +41,12 @@ class AppUpdater(private val app: Application) {
 
     private val _status = MutableStateFlow<String?>(null)
     val status = _status.asStateFlow()
+
+    private val _needsInstallPermission = MutableStateFlow<InstallNeed>(InstallNeed.None)
+    val needsInstallPermission = _needsInstallPermission.asStateFlow()
+
+    @Volatile
+    private var pendingApk: File? = null
 
     suspend fun check() = withContext(Dispatchers.IO) {
         try {
@@ -72,6 +83,21 @@ class AppUpdater(private val app: Application) {
         }
     }
 
+    fun canInstallPackages(): Boolean {
+        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            app.packageManager.canRequestPackageInstalls()
+        } else {
+            true
+        }
+    }
+
+    fun permissionSettingsIntent(): Intent {
+        return Intent(
+            Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES,
+            Uri.parse("package:${app.packageName}"),
+        )
+    }
+
     suspend fun downloadAndInstall(info: UpdateInfo): Boolean = withContext(Dispatchers.IO) {
         try {
             _status.value = "Descargando ${info.versionName}…"
@@ -85,22 +111,21 @@ class AppUpdater(private val app: Application) {
                 val apk = File(dir, "epub-latam-tts-${info.versionName}.apk")
                 resp.body?.byteStream()?.use { input ->
                     apk.outputStream().use { output -> input.copyTo(output) }
-                } ?: return@withContext false
-                _status.value = "Instalá la actualización…"
+                } ?: run {
+                    _status.value = "Descarga vacía"
+                    return@withContext false
+                }
+                pendingApk = apk
                 withContext(Dispatchers.Main) {
-                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O &&
-                        !app.packageManager.canRequestPackageInstalls()
-                    ) {
-                        app.startActivity(
-                            Intent(
-                                Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES,
-                                Uri.parse("package:${app.packageName}"),
-                            ).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
-                        )
-                        _status.value = "Activá “instalar apps desconocidas” y tocá Actualizar de nuevo."
+                    if (!canInstallPackages()) {
+                        _needsInstallPermission.value = InstallNeed.Permission(apk, info)
+                        _status.value =
+                            "Falta permiso: activá “Permitir de esta fuente” y volvé."
                         return@withContext
                     }
+                    _needsInstallPermission.value = InstallNeed.None
                     installApk(app, apk)
+                    _status.value = "Seguí la instalación en pantalla…"
                 }
                 true
             }
@@ -108,6 +133,25 @@ class AppUpdater(private val app: Application) {
             _status.value = "Error al actualizar: ${e.message}"
             false
         }
+    }
+
+    /** Llamar al volver de Ajustes si el usuario activó el permiso. */
+    fun tryInstallPending(): Boolean {
+        val apk = pendingApk ?: return false
+        if (!apk.exists()) return false
+        if (!canInstallPackages()) return false
+        _needsInstallPermission.value = InstallNeed.None
+        installApk(app, apk)
+        _status.value = "Seguí la instalación en pantalla…"
+        return true
+    }
+
+    fun openDownloadInBrowser(info: UpdateInfo) {
+        val intent = Intent(Intent.ACTION_VIEW, Uri.parse(info.apkUrl)).apply {
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        }
+        app.startActivity(intent)
+        _status.value = "Se abrió la descarga en el navegador."
     }
 
     private fun isNewer(remote: String, local: String): Boolean {
@@ -126,7 +170,7 @@ class AppUpdater(private val app: Application) {
 
     companion object {
         fun installApk(context: Context, apk: File) {
-            val uri: Uri = FileProvider.getUriForFile(
+            val uri = FileProvider.getUriForFile(
                 context,
                 "${context.packageName}.fileprovider",
                 apk,
@@ -135,6 +179,20 @@ class AppUpdater(private val app: Application) {
                 setDataAndType(uri, "application/vnd.android.package-archive")
                 addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
                 addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP)
+            }
+            // Algunos fabricantes necesitan que el PackageInstaller vea el URI
+            context.grantUriPermission(
+                "com.android.packageinstaller",
+                uri,
+                Intent.FLAG_GRANT_READ_URI_PERMISSION,
+            )
+            runCatching {
+                context.grantUriPermission(
+                    "com.google.android.packageinstaller",
+                    uri,
+                    Intent.FLAG_GRANT_READ_URI_PERMISSION,
+                )
             }
             context.startActivity(intent)
         }

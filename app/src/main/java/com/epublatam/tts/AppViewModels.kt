@@ -12,6 +12,7 @@ import com.epublatam.tts.epub.EpubParser
 import com.epublatam.tts.tts.PersonaVoice
 import com.epublatam.tts.tts.TtsStatus
 import com.epublatam.tts.update.AppUpdater
+import com.epublatam.tts.update.InstallNeed
 import com.epublatam.tts.update.UpdateInfo
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -41,6 +42,7 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
     val books = store.books.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
     val updateAvailable = updater.available
     val updateStatus = updater.status
+    val needsInstallPermission = updater.needsInstallPermission
 
     private val _busy = MutableStateFlow(false)
     val busy = _busy.asStateFlow()
@@ -57,6 +59,20 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
 
     fun installUpdate(info: UpdateInfo) {
         viewModelScope.launch { updater.downloadAndInstall(info) }
+    }
+
+    fun openPermissionSettings() = updater.permissionSettingsIntent()
+
+    fun onReturnedFromPermissionSettings() {
+        if (updater.tryInstallPending()) return
+        val need = needsInstallPermission.value
+        if (need is InstallNeed.Permission && !updater.canInstallPackages()) {
+            _message.value = "Todavía no está el permiso. Activá “Permitir de esta fuente”."
+        }
+    }
+
+    fun downloadInBrowser(info: UpdateInfo) {
+        updater.openDownloadInBrowser(info)
     }
 
     fun importEpub(uri: Uri) {
