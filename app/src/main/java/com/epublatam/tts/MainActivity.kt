@@ -57,7 +57,6 @@ class MainActivity : ComponentActivity() {
                     val books by libraryVm.books.collectAsState()
                     val busy by libraryVm.busy.collectAsState()
                     val message by libraryVm.message.collectAsState()
-                    val voiceMode by libraryVm.voiceMode.collectAsState()
                     val updateInfo by libraryVm.updateAvailable.collectAsState()
                     val updateStatus by libraryVm.updateStatus.collectAsState()
                     var selected by remember { mutableStateOf<BookMeta?>(null) }
@@ -68,7 +67,6 @@ class MainActivity : ComponentActivity() {
                                 books = books,
                                 busy = busy,
                                 message = message,
-                                voiceMode = voiceMode,
                                 updateInfo = updateInfo,
                                 updateStatus = updateStatus,
                                 onAdd = {
@@ -82,7 +80,6 @@ class MainActivity : ComponentActivity() {
                                 },
                                 onDelete = { libraryVm.deleteBook(it.id) },
                                 onDismissMessage = { libraryVm.clearMessage() },
-                                onVoiceMode = { libraryVm.setVoiceMode(it) },
                                 onInstallUpdate = { libraryVm.installUpdate(it) },
                             )
                         }

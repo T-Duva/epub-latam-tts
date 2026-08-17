@@ -27,7 +27,6 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.FilterChip
 import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -43,7 +42,6 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.epublatam.tts.ReaderUiState
 import com.epublatam.tts.data.BookMeta
-import com.epublatam.tts.tts.VoiceMode
 import com.epublatam.tts.update.UpdateInfo
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -52,14 +50,12 @@ fun LibraryScreen(
     books: List<BookMeta>,
     busy: Boolean,
     message: String?,
-    voiceMode: VoiceMode,
     updateInfo: UpdateInfo?,
     updateStatus: String?,
     onAdd: () -> Unit,
     onOpen: (BookMeta) -> Unit,
     onDelete: (BookMeta) -> Unit,
     onDismissMessage: () -> Unit,
-    onVoiceMode: (VoiceMode) -> Unit,
     onInstallUpdate: (UpdateInfo) -> Unit,
 ) {
     Scaffold(
@@ -94,30 +90,6 @@ fun LibraryScreen(
                 }
                 Spacer(Modifier.height(10.dp))
             }
-            Text(
-                "Misterio usa Daniela (Piper), acento argentino real, offline. " +
-                    "La primera vez descarga ~110 MB. Tomas/Elena son online con respaldo offline.",
-                style = MaterialTheme.typography.bodyMedium,
-            )
-            Spacer(Modifier.height(8.dp))
-            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                FilterChip(
-                    selected = voiceMode == VoiceMode.MISTERIO,
-                    onClick = { onVoiceMode(VoiceMode.MISTERIO) },
-                    label = { Text("Misterio") },
-                )
-                FilterChip(
-                    selected = voiceMode == VoiceMode.TOMAS_AR,
-                    onClick = { onVoiceMode(VoiceMode.TOMAS_AR) },
-                    label = { Text("Tomas AR") },
-                )
-                FilterChip(
-                    selected = voiceMode == VoiceMode.ELENA_AR,
-                    onClick = { onVoiceMode(VoiceMode.ELENA_AR) },
-                    label = { Text("Elena AR") },
-                )
-            }
-            Spacer(Modifier.height(12.dp))
             if (busy) {
                 CircularProgressIndicator(Modifier.align(Alignment.CenterHorizontally))
             }

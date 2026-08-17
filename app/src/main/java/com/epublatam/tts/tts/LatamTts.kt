@@ -41,96 +41,24 @@ import kotlin.math.roundToInt
 
 enum class TtsEngineKind { ELEVEN, EDGE, PIPER }
 
-enum class VoiceMode {
-    /** Piper Daniela AR offline — argentino real, sin Yankee ni internet */
-    MISTERIO,
-    /** Tomas argentino (Edge; si falla, Piper) */
-    TOMAS_AR,
-    /** Elena argentina (Edge; si falla, Piper) */
-    ELENA_AR,
-    ;
-
-    fun id(): String = when (this) {
-        MISTERIO -> "misterio"
-        TOMAS_AR -> "tomas_ar"
-        ELENA_AR -> "elena_ar"
-    }
-
-    companion object {
-        fun fromId(id: String?): VoiceMode = when (id) {
-            "tomas_ar" -> TOMAS_AR
-            "elena_ar" -> ELENA_AR
-            else -> MISTERIO
-        }
-    }
-}
-
 data class TtsStatus(
     val engine: TtsEngineKind,
     val voiceLabel: String,
     val message: String? = null,
 )
 
-class PersonaVoice(
-    private val context: Context,
-    private val apiKeyProvider: suspend () -> String?,
-    private val modeProvider: suspend () -> VoiceMode,
-) {
-    private val edge = EdgeNarrator(context)
+/** Siempre la mejor voz disponible: Piper Daniela AR (offline, argentino real). */
+class PersonaVoice(private val context: Context) {
     private val piper = PiperNarrator(context)
-    private var mode: TtsEngineKind = TtsEngineKind.PIPER
-    private var voiceMode: VoiceMode = VoiceMode.MISTERIO
 
     var lastStatus: TtsStatus = piper.status
         private set
 
     suspend fun prepare(onProgress: (String) -> Unit = {}): TtsStatus {
-        voiceMode = modeProvider()
-        return when (voiceMode) {
-            VoiceMode.MISTERIO -> {
-                onProgress("Preparando Daniela AR (offline)…")
-                piper.prepare("Daniela · misterio AR", mystery = true, onProgress = onProgress)
-                mode = TtsEngineKind.PIPER
-                lastStatus = piper.status
-                lastStatus
-            }
-            VoiceMode.TOMAS_AR -> prepareEdgeOrPiper(
-                "es-AR-TomasNeural",
-                "Tomas · Argentina",
-                "Daniela · Argentina (respaldo)",
-                onProgress,
-            )
-            VoiceMode.ELENA_AR -> prepareEdgeOrPiper(
-                "es-AR-ElenaNeural",
-                "Elena · Argentina",
-                "Daniela · Argentina (respaldo)",
-                onProgress,
-            )
-        }
-    }
-
-    private suspend fun prepareEdgeOrPiper(
-        voiceId: String,
-        edgeLabel: String,
-        piperLabel: String,
-        onProgress: (String) -> Unit,
-    ): TtsStatus {
-        return try {
-            onProgress("Conectando $edgeLabel…")
-            edge.prepare(voiceId, edgeLabel, serio = true)
-            mode = TtsEngineKind.EDGE
-            lastStatus = edge.status
-            lastStatus
-        } catch (e: Exception) {
-            Log.w("PersonaVoice", "Edge falló, uso Piper: ${e.message}")
-            onProgress("Sin voz online; usando argentina offline…")
-            piper.prepare(piperLabel, mystery = false, onProgress = onProgress)
-            mode = TtsEngineKind.PIPER
-            lastStatus = piper.status.copy(
-                message = "Respaldo offline · ${e.message?.take(90) ?: "Edge no disponible"}",
-            )
-            lastStatus
-        }
+        onProgress("Preparando voz argentina…")
+        piper.prepare("Daniela · Argentina", mystery = true, onProgress = onProgress)
+        lastStatus = piper.status
+        return lastStatus
     }
 
     suspend fun speak(text: String, rate: Float, onProgress: (String) -> Unit = {}, onDone: () -> Unit) {
@@ -139,31 +67,12 @@ class PersonaVoice(
             onDone()
             return
         }
-        val effectiveRate = when (voiceMode) {
-            VoiceMode.MISTERIO -> rate * 0.82f
-            VoiceMode.TOMAS_AR, VoiceMode.ELENA_AR -> rate * 0.88f
-        }
-        when (mode) {
-            TtsEngineKind.PIPER -> piper.speak(cleaned, effectiveRate, onProgress, onDone)
-            TtsEngineKind.EDGE -> edge.speak(cleaned, effectiveRate, onProgress, onDone)
-            TtsEngineKind.ELEVEN -> edge.speak(cleaned, effectiveRate, onProgress, onDone)
-        }
+        piper.speak(cleaned, rate * 0.85f, onProgress, onDone)
     }
 
-    fun stop() {
-        edge.stop()
-        piper.stop()
-    }
-
-    fun pause() {
-        edge.pause()
-        piper.pause()
-    }
-
-    fun release() {
-        edge.release()
-        piper.release()
-    }
+    fun stop() = piper.stop()
+    fun pause() = piper.pause()
+    fun release() = piper.release()
 }
 
 /** Texto para narración seria: menos “pregunta” al final, tipografía limpia. */

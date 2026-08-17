@@ -4,7 +4,6 @@ import android.app.Application
 import android.net.Uri
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
-import com.epublatam.tts.BuildConfig
 import com.epublatam.tts.data.BookMeta
 import com.epublatam.tts.data.BookStore
 import com.epublatam.tts.epub.EpubBook
@@ -12,7 +11,6 @@ import com.epublatam.tts.epub.EpubImporter
 import com.epublatam.tts.epub.EpubParser
 import com.epublatam.tts.tts.PersonaVoice
 import com.epublatam.tts.tts.TtsStatus
-import com.epublatam.tts.tts.VoiceMode
 import com.epublatam.tts.update.AppUpdater
 import com.epublatam.tts.update.UpdateInfo
 import kotlinx.coroutines.Job
@@ -48,22 +46,9 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
     val busy = _busy.asStateFlow()
     private val _message = MutableStateFlow<String?>(null)
     val message = _message.asStateFlow()
-    private val _elevenKey = MutableStateFlow("")
-    val elevenKey = _elevenKey.asStateFlow()
-    private val _voiceMode = MutableStateFlow(VoiceMode.MISTERIO)
-    val voiceMode = _voiceMode.asStateFlow()
 
     init {
-        viewModelScope.launch {
-            var key = store.getElevenLabsKey()
-            if (key.isBlank() && BuildConfig.ELEVENLABS_API_KEY.isNotBlank()) {
-                key = BuildConfig.ELEVENLABS_API_KEY
-                store.setElevenLabsKey(key)
-            }
-            _elevenKey.value = key
-            _voiceMode.value = VoiceMode.fromId(store.getVoiceMode())
-            updater.check()
-        }
+        viewModelScope.launch { updater.check() }
     }
 
     fun clearMessage() {
@@ -72,30 +57,6 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
 
     fun installUpdate(info: UpdateInfo) {
         viewModelScope.launch { updater.downloadAndInstall(info) }
-    }
-
-    fun setVoiceMode(mode: VoiceMode) {
-        viewModelScope.launch {
-            store.setVoiceMode(mode.id())
-            _voiceMode.value = mode
-            _message.value = when (mode) {
-                VoiceMode.MISTERIO -> "Misterio: Daniela argentina offline (descarga ~110 MB la primera vez)."
-                VoiceMode.TOMAS_AR -> "Tomas argentino online (si falla, usa Daniela offline)."
-                VoiceMode.ELENA_AR -> "Elena argentina online (si falla, usa Daniela offline)."
-            }
-        }
-    }
-
-    fun saveElevenKey(key: String) {
-        viewModelScope.launch {
-            store.setElevenLabsKey(key)
-            _elevenKey.value = key.trim()
-            _message.value = if (key.isBlank()) {
-                "Clave borrada. Se usará voz básica."
-            } else {
-                "Clave guardada. Abrí un libro: voz con alma."
-            }
-        }
     }
 
     fun importEpub(uri: Uri) {
@@ -128,11 +89,7 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
 
 class ReaderViewModel(app: Application) : AndroidViewModel(app) {
     private val store = BookStore(app)
-    private val voice = PersonaVoice(
-        app,
-        apiKeyProvider = { store.getElevenLabsKey() },
-        modeProvider = { VoiceMode.fromId(store.getVoiceMode()) },
-    )
+    private val voice = PersonaVoice(app)
     private val _state = MutableStateFlow(ReaderUiState())
     val state: StateFlow<ReaderUiState> = _state.asStateFlow()
     private var speakJob: Job? = null
