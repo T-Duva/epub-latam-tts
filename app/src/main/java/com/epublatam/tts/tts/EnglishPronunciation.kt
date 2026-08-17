@@ -200,7 +200,50 @@ object EdgeSsmlText {
             sb.append(xmlEscape(marked.substring(i, next)))
             i = next
         }
-        return sb.toString()
+        return insertHumanBreaks(sb.toString())
+    }
+
+    /**
+     * Pausa real de narrador, dentro del audio.
+     * No corta el texto: el motor respira y sigue.
+     */
+    private fun insertHumanBreaks(xml: String): String {
+        val out = StringBuilder(xml.length + 64)
+        var i = 0
+        while (i < xml.length) {
+            if (xml.startsWith("\n\n", i)) {
+                out.append(HumanPacing.ssmlBreak(HumanPacing.PARAGRAPH_MS))
+                while (i < xml.length && xml[i] == '\n') i++
+                continue
+            }
+            val c = xml[i]
+            out.append(c)
+            val next = xml.getOrNull(i + 1)
+            val afterSpaceOrEnd = next == null || next.isWhitespace() || next == '<'
+            when (c) {
+                ',' -> if (afterSpaceOrEnd) out.append(HumanPacing.ssmlBreak(HumanPacing.COMMA_MS))
+                ';', ':' -> if (afterSpaceOrEnd) out.append(HumanPacing.ssmlBreak(HumanPacing.COLON_MS))
+                '.', '…' -> if (afterSpaceOrEnd && !isAbbreviationPeriod(xml, i)) {
+                    out.append(HumanPacing.ssmlBreak(HumanPacing.PERIOD_MS))
+                }
+                '?', '!' -> if (afterSpaceOrEnd) {
+                    out.append(HumanPacing.ssmlBreak(HumanPacing.QUESTION_MS))
+                }
+            }
+            i++
+        }
+        return out.toString()
+    }
+
+    private val ABBREV = setOf(
+        "dr", "sr", "sra", "srta", "ud", "uds", "etc", "mr", "mrs", "ms", "st", "vs",
+    )
+
+    private fun isAbbreviationPeriod(s: String, periodIndex: Int): Boolean {
+        var start = periodIndex - 1
+        while (start >= 0 && s[start].isLetter()) start--
+        val word = s.substring(start + 1, periodIndex).lowercase()
+        return word in ABBREV
     }
 
     private fun xmlEscape(s: String): String =

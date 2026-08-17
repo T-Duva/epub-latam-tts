@@ -19,9 +19,6 @@ import java.util.concurrent.atomic.AtomicInteger
 class PiperNarrator(private val context: Context) {
     companion object {
         private const val TAG = "PiperNarrator"
-        private const val LENGTH_SCALE = 1.12f
-        private const val SILENCE_SCALE = 0.28f
-        private const val BASE_SPEED = 0.92f
     }
 
     private val installer = PiperModelInstaller(context)
@@ -59,24 +56,24 @@ class PiperNarrator(private val context: Context) {
                             dataDir = installer.dataDirPath,
                             noiseScale = 0.667f,
                             noiseScaleW = 0.8f,
-                            lengthScale = LENGTH_SCALE,
+                            lengthScale = HumanPacing.PIPER_LENGTH_SCALE,
                         ),
                         numThreads = 2,
                         debug = false,
                         provider = "cpu",
                     ),
-                    maxNumSentences = 2,
-                    silenceScale = SILENCE_SCALE,
+                    maxNumSentences = 1,
+                    silenceScale = HumanPacing.PIPER_SILENCE_SCALE,
                 ),
             )
         }
         status = TtsStatus(
             engine = TtsEngineKind.PIPER,
             voiceLabel = label,
-            message = "Argentino · ritmo normal",
+            message = "Argentino · ritmo de narrador",
         )
         withContext(Dispatchers.IO) {
-            val audio = requireTts().generate(text = "Listo.", sid = 0, speed = BASE_SPEED)
+            val audio = requireTts().generate(text = "Listo.", sid = 0, speed = HumanPacing.PIPER_BASE_SPEED)
             if (audio.samples.isEmpty()) error("Piper no generó audio de prueba")
         }
         onProgress(status.message ?: "Listo")
@@ -95,12 +92,12 @@ class PiperNarrator(private val context: Context) {
         player.stop()
         val engine = requireTts()
         val prepared = EnglishPronunciation.forOffline(text)
-        val chunks = StoryChunks.split(prepared, maxChars = 420)
+        val chunks = StoryChunks.split(prepared, maxChars = 280)
         if (chunks.isEmpty()) {
             withContext(Dispatchers.Main) { onDone() }
             return
         }
-        val speed = (BASE_SPEED * rate.coerceIn(0.8f, 1.3f)).coerceIn(0.75f, 1.15f)
+        val speed = (HumanPacing.PIPER_BASE_SPEED * rate.coerceIn(0.85f, 1.15f)).coerceIn(0.68f, 0.95f)
 
         withContext(Dispatchers.IO) {
             coroutineScope {
@@ -139,7 +136,9 @@ class PiperNarrator(private val context: Context) {
                             throw IllegalStateException("No se pudo guardar el audio")
                         }
                         player.playFile(wav) { session.get() == my }
-                        if (session.get() == my && index < chunks.lastIndex) delay(70)
+                        if (session.get() == my && index < chunks.lastIndex) {
+                            delay(HumanPacing.pauseAfterEnding(chunk))
+                        }
                     } finally {
                         wav.delete()
                     }

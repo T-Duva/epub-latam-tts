@@ -21,8 +21,8 @@ android {
         applicationId = "com.epublatam.tts"
         minSdk = 26
         targetSdk = 35
-        versionCode = 14
-        versionName = "1.6.4"
+        versionCode = 15
+        versionName = "1.6.5"
         buildConfigField("String", "GCS_TTS_API_KEY", "\"${gcsApiKey.replace("\"", "\\\"")}\"")
         buildConfigField("String", "ELEVENLABS_API_KEY", "\"${elevenApiKey.replace("\"", "\\\"")}\"")
         ndk {

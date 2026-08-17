@@ -61,7 +61,7 @@ class PersonaVoice(private val context: Context) {
             onProgress("Preparando voz argentina…")
             edge.prepare("es-AR-TomasNeural", "Tomas · Argentina", serio = true)
             usePiper = false
-            lastStatus = edge.status.copy(message = "Argentino · pausas naturales · inglés correcto")
+            lastStatus = edge.status.copy(message = "Argentino · ritmo de narrador (~140 pal/min)")
             lastStatus
         } catch (e: Exception) {
             Log.w("PersonaVoice", "Edge no disponible, Piper: ${e.message}")
@@ -465,7 +465,7 @@ class EdgeNarrator(private val context: Context) {
         this.voiceName = voiceId
         this.serio = serio
         syncClockSkew()
-        val rate = if (serio) "-10%" else "+0%"
+        val rate = HumanPacing.EDGE_PREPARE_RATE
         var last: Exception? = null
         repeat(3) { attempt ->
             try {
@@ -473,7 +473,7 @@ class EdgeNarrator(private val context: Context) {
                 status = TtsStatus(
                     engine = TtsEngineKind.EDGE,
                     voiceLabel = label,
-                    message = "Argentino · ritmo natural",
+                    message = "Argentino · pausa en puntos, como un narrador",
                 )
                 return
             } catch (e: Exception) {
@@ -523,7 +523,7 @@ class EdgeNarrator(private val context: Context) {
     ) {
         val my = session.incrementAndGet()
         player.stop()
-        val chunks = StoryChunks.split(text, maxChars = 900)
+        val chunks = StoryChunks.split(text, maxChars = 700)
         if (chunks.isEmpty()) {
             withContext(Dispatchers.Main) { onDone() }
             return
@@ -555,7 +555,9 @@ class EdgeNarrator(private val context: Context) {
                     file.writeBytes(audio)
                     try {
                         player.playFile(file) { session.get() == my }
-                        if (session.get() == my && index < chunks.lastIndex) delay(80)
+                        if (session.get() == my && index < chunks.lastIndex) {
+                            delay(40)
+                        }
                     } finally {
                         file.delete()
                     }
@@ -568,8 +570,8 @@ class EdgeNarrator(private val context: Context) {
     }
 
     private fun toEdgeRate(userRate: Float): String {
-        val base = if (serio) 0.92f else 1.0f
-        val pct = ((userRate.coerceIn(0.75f, 1.35f) * base - 1f) * 100f).roundToInt()
+        val factor = HumanPacing.EDGE_RATE_FACTOR * userRate.coerceIn(0.85f, 1.20f)
+        val pct = ((factor - 1f) * 100f).roundToInt()
         return if (pct >= 0) "+$pct%" else "$pct%"
     }
 
