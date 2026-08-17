@@ -163,13 +163,36 @@ class ReaderViewModel(app: Application) : AndroidViewModel(app) {
     fun play() {
         val s = _state.value
         val epub = s.epub ?: return
-        val chapter = epub.chapters.getOrNull(s.chapterIndex) ?: return
+        // Saltar capítulos sin texto legible
+        var idx = s.chapterIndex
+        while (idx <= epub.chapters.lastIndex && epub.chapters[idx].text.trim().length < 20) {
+            idx++
+        }
+        if (idx > epub.chapters.lastIndex) {
+            _state.value = s.copy(
+                isPlaying = false,
+                error = "Este libro no tiene texto legible (¿solo imágenes o DRM?).",
+            )
+            return
+        }
+        if (idx != s.chapterIndex) {
+            _state.value = s.copy(chapterIndex = idx)
+        }
+        val chapter = epub.chapters[idx]
         speakJob?.cancel()
-        voice.stop()
-        _state.value = s.copy(isPlaying = true, error = null)
+        // No llamar voice.stop() acá: race con el job anterior. speak() inicia sesión nueva.
+        _state.value = _state.value.copy(isPlaying = true, error = null)
         speakJob = viewModelScope.launch {
             try {
-                voice.speak(chapter.text, s.rate) {
+                voice.speak(
+                    chapter.text,
+                    _state.value.rate,
+                    onProgress = { msg ->
+                        _state.value = _state.value.copy(
+                            status = voice.lastStatus.copy(message = msg),
+                        )
+                    },
+                ) {
                     val cur = _state.value
                     val next = cur.chapterIndex + 1
                     if (cur.epub != null && next <= cur.epub.chapters.lastIndex) {
