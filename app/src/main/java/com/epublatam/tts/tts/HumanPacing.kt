@@ -1,25 +1,25 @@
 package com.epublatam.tts.tts
 
 /**
- * Ritmo de narrador, no metrónomo.
- *
- * Mal: rate/lengthScale estira CADA fonema igual + un delay después de cada
- * punto + síntesis de la oración siguiente = pausas eternas y lectura robot.
- * Bien: el motor elige duraciones (vocal tónica más larga, “de/el” más cortos);
- * el siguiente audio se fabrica MIENTRAS suena este; no se espera red al punto.
+ * Lento como narrador (~130 pal/min), sin hueco de red al punto.
+ * El prefetch sigue: el siguiente audio se arma mientras suena este.
+ * Las pausas de coma/punto van DENTRO del audio, no esperando síntesis.
  */
 object HumanPacing {
-    const val COMMA_MS = 160
-    const val COLON_MS = 180
+    const val COMMA_MS = 220
+    const val COLON_MS = 260
+    const val PERIOD_MS = 320
+    const val QUESTION_MS = 360
+    const val PARAGRAPH_MS = 420
 
-    /** Cerca del default neural: el modelo marca el timing, no un estirado uniforme. */
-    const val EDGE_RATE_FACTOR = 0.94f
-    const val EDGE_PREPARE_RATE = "-8%"
+    /** Neural default ~175 pal/min → ~130 pal/min. */
+    const val EDGE_RATE_FACTOR = 0.74f
+    const val EDGE_PREPARE_RATE = "-26%"
     const val EDGE_PITCH = "-8Hz"
 
-    const val PIPER_LENGTH_SCALE = 1.04f
-    const val PIPER_SILENCE_SCALE = 0.40f
-    const val PIPER_BASE_SPEED = 0.94f
+    const val PIPER_LENGTH_SCALE = 1.16f
+    const val PIPER_SILENCE_SCALE = 0.48f
+    const val PIPER_BASE_SPEED = 0.76f
 
     fun ssmlBreak(ms: Int): String = """<break time="${ms}ms"/>"""
 }

@@ -314,7 +314,7 @@ object EdgeSsmlText {
         var i = 0
         while (i < xml.length) {
             if (xml.startsWith("\n\n", i)) {
-                out.append(' ')
+                out.append(HumanPacing.ssmlBreak(HumanPacing.PARAGRAPH_MS))
                 while (i < xml.length && xml[i] == '\n') i++
                 continue
             }
@@ -325,6 +325,8 @@ object EdgeSsmlText {
             when (c) {
                 ',' -> if (afterSpaceOrEnd) out.append(HumanPacing.ssmlBreak(HumanPacing.COMMA_MS))
                 ';', ':' -> if (afterSpaceOrEnd) out.append(HumanPacing.ssmlBreak(HumanPacing.COLON_MS))
+                '.', '…' -> if (afterSpaceOrEnd) out.append(HumanPacing.ssmlBreak(HumanPacing.PERIOD_MS))
+                '?', '!' -> if (afterSpaceOrEnd) out.append(HumanPacing.ssmlBreak(HumanPacing.QUESTION_MS))
             }
             i++
         }
