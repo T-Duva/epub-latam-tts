@@ -4,6 +4,7 @@ import android.app.Application
 import android.net.Uri
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import com.epublatam.tts.BuildConfig
 import com.epublatam.tts.data.BookMeta
 import com.epublatam.tts.data.BookStore
 import com.epublatam.tts.epub.EpubBook
@@ -45,7 +46,12 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
 
     init {
         viewModelScope.launch {
-            _elevenKey.value = store.getElevenLabsKey()
+            var key = store.getElevenLabsKey()
+            if (key.isBlank() && BuildConfig.ELEVENLABS_API_KEY.isNotBlank()) {
+                key = BuildConfig.ELEVENLABS_API_KEY
+                store.setElevenLabsKey(key)
+            }
+            _elevenKey.value = key
         }
     }
 

@@ -59,6 +59,7 @@ class PersonaVoice(
 
     suspend fun prepare(): TtsStatus {
         val key = apiKeyProvider()?.trim().orEmpty()
+            .ifBlank { com.epublatam.tts.BuildConfig.ELEVENLABS_API_KEY.trim() }
         if (key.isNotBlank()) {
             eleven.prepare(key)
             mode = TtsEngineKind.ELEVEN
@@ -68,7 +69,7 @@ class PersonaVoice(
         edge.prepare()
         mode = TtsEngineKind.EDGE
         lastStatus = edge.status.copy(
-            message = "Sin clave ElevenLabs: voz básica. Pegá una clave gratis para voz con alma.",
+            message = "Voz básica (Dalia). Sin clave ElevenLabs.",
         )
         return lastStatus
     }

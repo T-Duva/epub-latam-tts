@@ -79,16 +79,16 @@ fun LibraryScreen(
                 .padding(16.dp),
         ) {
             Text(
-                "Para voz con alma (interpreta el texto): creá cuenta gratis en elevenlabs.io, " +
-                    "copiá tu API Key y pegala acá. Sin clave usa voz básica (Dalia).",
+                "Voz ElevenLabs ya viene cargada. Tocá + para importar un EPUB e internet para escuchar.",
                 style = MaterialTheme.typography.bodyMedium,
             )
             Spacer(Modifier.height(8.dp))
+            // Campo opcional por si querés cambiar la clave después
             OutlinedTextField(
                 value = keyDraft,
                 onValueChange = { keyDraft = it },
                 modifier = Modifier.fillMaxWidth(),
-                label = { Text("Clave ElevenLabs (opcional)") },
+                label = { Text("Clave ElevenLabs (ya configurada)") },
                 singleLine = true,
                 visualTransformation = PasswordVisualTransformation(),
             )

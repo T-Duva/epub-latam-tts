@@ -11,6 +11,7 @@ val localProps = Properties().apply {
     if (f.exists()) f.inputStream().use { load(it) }
 }
 val gcsApiKey: String = localProps.getProperty("GCS_TTS_API_KEY", "")
+val elevenApiKey: String = localProps.getProperty("ELEVENLABS_API_KEY", "")
 
 android {
     namespace = "com.epublatam.tts"
@@ -20,9 +21,10 @@ android {
         applicationId = "com.epublatam.tts"
         minSdk = 26
         targetSdk = 35
-        versionCode = 4
-        versionName = "1.3.0"
+        versionCode = 5
+        versionName = "1.3.1"
         buildConfigField("String", "GCS_TTS_API_KEY", "\"${gcsApiKey.replace("\"", "\\\"")}\"")
+        buildConfigField("String", "ELEVENLABS_API_KEY", "\"${elevenApiKey.replace("\"", "\\\"")}\"")
     }
 
     buildTypes {
