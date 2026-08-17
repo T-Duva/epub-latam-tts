@@ -32,24 +32,19 @@ import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Slider
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
-import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.epublatam.tts.ReaderUiState
 import com.epublatam.tts.data.BookMeta
 import com.epublatam.tts.tts.VoiceMode
+import com.epublatam.tts.update.UpdateInfo
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -57,19 +52,18 @@ fun LibraryScreen(
     books: List<BookMeta>,
     busy: Boolean,
     message: String?,
-    elevenKey: String,
     voiceMode: VoiceMode,
+    updateInfo: UpdateInfo?,
+    updateStatus: String?,
     onAdd: () -> Unit,
     onOpen: (BookMeta) -> Unit,
     onDelete: (BookMeta) -> Unit,
     onDismissMessage: () -> Unit,
-    onSaveElevenKey: (String) -> Unit,
     onVoiceMode: (VoiceMode) -> Unit,
+    onInstallUpdate: (UpdateInfo) -> Unit,
 ) {
-    var keyDraft by remember(elevenKey) { mutableStateOf(elevenKey) }
-
     Scaffold(
-        topBar = { TopAppBar(title = { Text("EPUB voz persona") }) },
+        topBar = { TopAppBar(title = { Text("EPUB voz argentina") }) },
         floatingActionButton = {
             FloatingActionButton(onClick = onAdd) {
                 Icon(Icons.Default.Add, contentDescription = "Añadir EPUB")
@@ -82,8 +76,27 @@ fun LibraryScreen(
                 .padding(padding)
                 .padding(16.dp),
         ) {
+            updateInfo?.let { info ->
+                Card(Modifier.fillMaxWidth()) {
+                    Column(Modifier.padding(12.dp)) {
+                        Text(
+                            "Nueva versión ${info.versionName}",
+                            style = MaterialTheme.typography.titleSmall,
+                        )
+                        updateStatus?.let {
+                            Text(it, style = MaterialTheme.typography.bodySmall)
+                        }
+                        Spacer(Modifier.height(8.dp))
+                        Button(onClick = { onInstallUpdate(info) }) {
+                            Text("Actualizar en la app")
+                        }
+                    }
+                }
+                Spacer(Modifier.height(10.dp))
+            }
             Text(
-                "Elegí el estilo de narración. Para misterio usá el primero (más alma, tono grave).",
+                "Misterio usa Daniela (Piper), acento argentino real, offline. " +
+                    "La primera vez descarga ~110 MB. Tomas/Elena son online con respaldo offline.",
                 style = MaterialTheme.typography.bodyMedium,
             )
             Spacer(Modifier.height(8.dp))
@@ -103,19 +116,6 @@ fun LibraryScreen(
                     onClick = { onVoiceMode(VoiceMode.ELENA_AR) },
                     label = { Text("Elena AR") },
                 )
-            }
-            Spacer(Modifier.height(8.dp))
-            OutlinedTextField(
-                value = keyDraft,
-                onValueChange = { keyDraft = it },
-                modifier = Modifier.fillMaxWidth(),
-                label = { Text("Clave ElevenLabs (para Misterio)") },
-                singleLine = true,
-                visualTransformation = PasswordVisualTransformation(),
-            )
-            Spacer(Modifier.height(6.dp))
-            Button(onClick = { onSaveElevenKey(keyDraft) }) {
-                Text("Guardar clave")
             }
             Spacer(Modifier.height(12.dp))
             if (busy) {
@@ -202,11 +202,17 @@ fun ReaderScreen(
             Column(
                 Modifier
                     .fillMaxSize()
-                    .padding(padding),
+                    .padding(padding)
+                    .padding(24.dp),
                 verticalArrangement = Arrangement.Center,
                 horizontalAlignment = Alignment.CenterHorizontally,
             ) {
                 CircularProgressIndicator()
+                Spacer(Modifier.height(12.dp))
+                Text(
+                    state.progress ?: "Preparando voz…",
+                    style = MaterialTheme.typography.bodyMedium,
+                )
             }
             return@Scaffold
         }

@@ -13,6 +13,8 @@ import com.epublatam.tts.epub.EpubParser
 import com.epublatam.tts.tts.PersonaVoice
 import com.epublatam.tts.tts.TtsStatus
 import com.epublatam.tts.tts.VoiceMode
+import com.epublatam.tts.update.AppUpdater
+import com.epublatam.tts.update.UpdateInfo
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
@@ -31,12 +33,16 @@ data class ReaderUiState(
     val status: TtsStatus? = null,
     val error: String? = null,
     val loading: Boolean = false,
+    val progress: String? = null,
 )
 
 class LibraryViewModel(app: Application) : AndroidViewModel(app) {
     private val store = BookStore(app)
     private val importer = EpubImporter(app)
+    private val updater = AppUpdater(app)
     val books = store.books.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
+    val updateAvailable = updater.available
+    val updateStatus = updater.status
 
     private val _busy = MutableStateFlow(false)
     val busy = _busy.asStateFlow()
@@ -56,6 +62,7 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
             }
             _elevenKey.value = key
             _voiceMode.value = VoiceMode.fromId(store.getVoiceMode())
+            updater.check()
         }
     }
 
@@ -63,14 +70,18 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
         _message.value = null
     }
 
+    fun installUpdate(info: UpdateInfo) {
+        viewModelScope.launch { updater.downloadAndInstall(info) }
+    }
+
     fun setVoiceMode(mode: VoiceMode) {
         viewModelScope.launch {
             store.setVoiceMode(mode.id())
             _voiceMode.value = mode
             _message.value = when (mode) {
-                VoiceMode.MISTERIO -> "Modo misterio (Brian, más alma)."
-                VoiceMode.TOMAS_AR -> "Modo Tomas argentino serio."
-                VoiceMode.ELENA_AR -> "Modo Elena argentina."
+                VoiceMode.MISTERIO -> "Misterio: Daniela argentina offline (descarga ~110 MB la primera vez)."
+                VoiceMode.TOMAS_AR -> "Tomas argentino online (si falla, usa Daniela offline)."
+                VoiceMode.ELENA_AR -> "Elena argentina online (si falla, usa Daniela offline)."
             }
         }
     }
@@ -134,14 +145,16 @@ class ReaderViewModel(app: Application) : AndroidViewModel(app) {
                 val epub = EpubParser.parse(file)
                 val idx = meta.lastChapterIndex.coerceIn(0, epub.chapters.lastIndex)
                 val status = try {
-                    voice.prepare()
+                    voice.prepare { msg ->
+                        _state.value = _state.value.copy(progress = msg, loading = true)
+                    }
                 } catch (e: Exception) {
                     _state.value = ReaderUiState(
                         bookMeta = meta,
                         epub = epub,
                         chapterIndex = idx,
                         loading = false,
-                        error = e.message ?: "Necesitás internet para la voz.",
+                        error = e.message ?: "No se pudo preparar la voz.",
                     )
                     return@launch
                 }
@@ -151,6 +164,7 @@ class ReaderViewModel(app: Application) : AndroidViewModel(app) {
                     chapterIndex = idx,
                     status = status,
                     loading = false,
+                    progress = null,
                 )
             } catch (e: Exception) {
                 _state.value = ReaderUiState(

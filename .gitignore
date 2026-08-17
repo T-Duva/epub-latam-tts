@@ -16,3 +16,5 @@ secrets.properties
 
 test-dalia.mp3
 *.mp3
+/tools/
+cmp-*.mp3

@@ -7,7 +7,6 @@ import android.media.AudioManager
 import android.media.MediaPlayer
 import android.os.Build
 import android.util.Log
-import com.epublatam.tts.BuildConfig
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
@@ -40,14 +39,14 @@ import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
 import kotlin.math.roundToInt
 
-enum class TtsEngineKind { ELEVEN, EDGE }
+enum class TtsEngineKind { ELEVEN, EDGE, PIPER }
 
 enum class VoiceMode {
-    /** Brian profundo + español forzado: más alma para misterio */
+    /** Piper Daniela AR offline — argentino real, sin Yankee ni internet */
     MISTERIO,
-    /** Tomas argentino, tono grave y lento */
+    /** Tomas argentino (Edge; si falla, Piper) */
     TOMAS_AR,
-    /** Elena argentina, más grave/lenta que el default */
+    /** Elena argentina (Edge; si falla, Piper) */
     ELENA_AR,
     ;
 
@@ -78,43 +77,60 @@ class PersonaVoice(
     private val modeProvider: suspend () -> VoiceMode,
 ) {
     private val edge = EdgeNarrator(context)
-    private val eleven = ElevenNarrator(context)
-    private var mode: TtsEngineKind = TtsEngineKind.EDGE
+    private val piper = PiperNarrator(context)
+    private var mode: TtsEngineKind = TtsEngineKind.PIPER
     private var voiceMode: VoiceMode = VoiceMode.MISTERIO
 
-    var lastStatus: TtsStatus = edge.status
+    var lastStatus: TtsStatus = piper.status
         private set
 
-    suspend fun prepare(): TtsStatus {
+    suspend fun prepare(onProgress: (String) -> Unit = {}): TtsStatus {
         voiceMode = modeProvider()
         return when (voiceMode) {
-            VoiceMode.MISTERIO -> prepareMisterio()
-            VoiceMode.TOMAS_AR -> prepareEdge("es-AR-TomasNeural", "Tomas · Argentina", serio = true)
-            VoiceMode.ELENA_AR -> prepareEdge("es-AR-ElenaNeural", "Elena · Argentina", serio = true)
+            VoiceMode.MISTERIO -> {
+                onProgress("Preparando Daniela AR (offline)…")
+                piper.prepare("Daniela · misterio AR", mystery = true, onProgress = onProgress)
+                mode = TtsEngineKind.PIPER
+                lastStatus = piper.status
+                lastStatus
+            }
+            VoiceMode.TOMAS_AR -> prepareEdgeOrPiper(
+                "es-AR-TomasNeural",
+                "Tomas · Argentina",
+                "Daniela · Argentina (respaldo)",
+                onProgress,
+            )
+            VoiceMode.ELENA_AR -> prepareEdgeOrPiper(
+                "es-AR-ElenaNeural",
+                "Elena · Argentina",
+                "Daniela · Argentina (respaldo)",
+                onProgress,
+            )
         }
     }
 
-    private suspend fun prepareMisterio(): TtsStatus {
-        val key = apiKeyProvider()?.trim().orEmpty()
-            .ifBlank { BuildConfig.ELEVENLABS_API_KEY.trim() }
-            .ifBlank { "sk_2d18d9523094fd4a90ecd8d5a617b5c2a5b5fe18b896022a" }
+    private suspend fun prepareEdgeOrPiper(
+        voiceId: String,
+        edgeLabel: String,
+        piperLabel: String,
+        onProgress: (String) -> Unit,
+    ): TtsStatus {
         return try {
-            eleven.prepare(key, mystery = true)
-            eleven.warmUp()
-            mode = TtsEngineKind.ELEVEN
-            lastStatus = eleven.status
+            onProgress("Conectando $edgeLabel…")
+            edge.prepare(voiceId, edgeLabel, serio = true)
+            mode = TtsEngineKind.EDGE
+            lastStatus = edge.status
             lastStatus
         } catch (e: Exception) {
-            Log.e("PersonaVoice", "Misterio falló, Tomas AR: ${e.message}")
-            prepareEdge("es-AR-TomasNeural", "Tomas · Argentina", serio = true)
+            Log.w("PersonaVoice", "Edge falló, uso Piper: ${e.message}")
+            onProgress("Sin voz online; usando argentina offline…")
+            piper.prepare(piperLabel, mystery = false, onProgress = onProgress)
+            mode = TtsEngineKind.PIPER
+            lastStatus = piper.status.copy(
+                message = "Respaldo offline · ${e.message?.take(90) ?: "Edge no disponible"}",
+            )
+            lastStatus
         }
-    }
-
-    private suspend fun prepareEdge(voiceId: String, label: String, serio: Boolean): TtsStatus {
-        edge.prepare(voiceId, label, serio)
-        mode = TtsEngineKind.EDGE
-        lastStatus = edge.status
-        return lastStatus
     }
 
     suspend fun speak(text: String, rate: Float, onProgress: (String) -> Unit = {}, onDone: () -> Unit) {
@@ -123,30 +139,30 @@ class PersonaVoice(
             onDone()
             return
         }
-        // Misterio: un poco más lento
         val effectiveRate = when (voiceMode) {
-            VoiceMode.MISTERIO -> rate * 0.88f
-            VoiceMode.TOMAS_AR, VoiceMode.ELENA_AR -> rate * 0.85f
+            VoiceMode.MISTERIO -> rate * 0.82f
+            VoiceMode.TOMAS_AR, VoiceMode.ELENA_AR -> rate * 0.88f
         }
         when (mode) {
-            TtsEngineKind.ELEVEN -> eleven.speak(cleaned, effectiveRate, onProgress, onDone)
+            TtsEngineKind.PIPER -> piper.speak(cleaned, effectiveRate, onProgress, onDone)
             TtsEngineKind.EDGE -> edge.speak(cleaned, effectiveRate, onProgress, onDone)
+            TtsEngineKind.ELEVEN -> edge.speak(cleaned, effectiveRate, onProgress, onDone)
         }
     }
 
     fun stop() {
         edge.stop()
-        eleven.stop()
+        piper.stop()
     }
 
     fun pause() {
         edge.pause()
-        eleven.pause()
+        piper.pause()
     }
 
     fun release() {
         edge.release()
-        eleven.release()
+        piper.release()
     }
 }
 
@@ -223,7 +239,7 @@ object StoryChunks {
     }
 }
 
-private class AudioPlayer(private val context: Context) {
+internal class AudioPlayer(private val context: Context) {
     private var player: MediaPlayer? = null
     private val audioManager = context.getSystemService(Context.AUDIO_SERVICE) as AudioManager
     private var focusRequest: AudioFocusRequest? = null
@@ -498,6 +514,7 @@ class EdgeNarrator(private val context: Context) {
     private val cacheDir = File(context.cacheDir, "edge_voice").also { it.mkdirs() }
     private var voiceName: String = "es-AR-TomasNeural"
     private var serio: Boolean = true
+    private var clockSkewMs: Long = 0L
 
     var status = TtsStatus(
         engine = TtsEngineKind.EDGE,
@@ -509,14 +526,55 @@ class EdgeNarrator(private val context: Context) {
     suspend fun prepare(voiceId: String, label: String, serio: Boolean) {
         this.voiceName = voiceId
         this.serio = serio
-        // Grave y lento para bajar el “cantito” final
+        syncClockSkew()
         val rate = if (serio) "-20%" else "-5%"
-        synthesizePlain("Listo.", rate)
-        status = TtsStatus(
-            engine = TtsEngineKind.EDGE,
-            voiceLabel = label,
-            message = if (serio) "Argentino · tono serio y lento" else "Argentino",
+        var last: Exception? = null
+        repeat(3) { attempt ->
+            try {
+                synthesizePlain("Listo.", rate)
+                status = TtsStatus(
+                    engine = TtsEngineKind.EDGE,
+                    voiceLabel = label,
+                    message = if (serio) "Argentino · tono serio y lento" else "Argentino",
+                )
+                return
+            } catch (e: Exception) {
+                last = e
+                Log.e(TAG, "prepare intento ${attempt + 1}: ${e.message}")
+                delay(450L * (attempt + 1))
+                syncClockSkew()
+            }
+        }
+        throw IllegalStateException(
+            "No se pudo conectar con $voiceId. ${last?.message ?: "error"}",
+            last,
         )
+    }
+
+    /** Ajusta reloj contra Date del servidor (evita 403 por Sec-MS-GEC). */
+    private fun syncClockSkew() {
+        try {
+            val req = Request.Builder()
+                .url(
+                    "https://speech.platform.bing.com/consumer/speech/synthesize/readaloud/voices/list" +
+                        "?trustedclienttoken=$TRUSTED_TOKEN",
+                )
+                .header(
+                    "User-Agent",
+                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 " +
+                        "(KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36 Edg/143.0.0.0",
+                )
+                .build()
+            client.newCall(req).execute().use { resp ->
+                val dateHdr = resp.header("Date") ?: return
+                val fmt = SimpleDateFormat("EEE, dd MMM yyyy HH:mm:ss z", Locale.US)
+                val server = fmt.parse(dateHdr)?.time ?: return
+                clockSkewMs = server - System.currentTimeMillis()
+                Log.d(TAG, "clockSkewMs=$clockSkewMs")
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "syncClockSkew: ${e.message}")
+        }
     }
 
     suspend fun speak(
@@ -579,7 +637,7 @@ class EdgeNarrator(private val context: Context) {
     }
 
     private fun generateSecMsGec(): String {
-        var ticks = System.currentTimeMillis() / 1000.0 + WIN_EPOCH
+        var ticks = (System.currentTimeMillis() + clockSkewMs) / 1000.0 + WIN_EPOCH
         ticks -= ticks % 300.0
         ticks *= 10_000_000.0
         val str = "${ticks.toLong()}$TRUSTED_TOKEN"
@@ -705,7 +763,15 @@ class EdgeNarrator(private val context: Context) {
                     }
 
                     override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
-                        completeErr(IllegalStateException("Sin internet para la voz.", t))
+                        val code = response?.code
+                        val detail = t.message?.take(120) ?: t.javaClass.simpleName
+                        val msg = when {
+                            code == 403 -> "Voz online rechazada (403). Reloj del teléfono o token. $detail"
+                            code != null -> "Voz online falló (HTTP $code): $detail"
+                            else -> "Voz online falló: $detail"
+                        }
+                        Log.e(TAG, msg, t)
+                        completeErr(IllegalStateException(msg, t))
                     }
 
                     override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {

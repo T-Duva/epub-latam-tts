@@ -57,8 +57,9 @@ class MainActivity : ComponentActivity() {
                     val books by libraryVm.books.collectAsState()
                     val busy by libraryVm.busy.collectAsState()
                     val message by libraryVm.message.collectAsState()
-                    val elevenKey by libraryVm.elevenKey.collectAsState()
                     val voiceMode by libraryVm.voiceMode.collectAsState()
+                    val updateInfo by libraryVm.updateAvailable.collectAsState()
+                    val updateStatus by libraryVm.updateStatus.collectAsState()
                     var selected by remember { mutableStateOf<BookMeta?>(null) }
 
                     NavHost(navController = nav, startDestination = "library") {
@@ -67,8 +68,9 @@ class MainActivity : ComponentActivity() {
                                 books = books,
                                 busy = busy,
                                 message = message,
-                                elevenKey = elevenKey,
                                 voiceMode = voiceMode,
+                                updateInfo = updateInfo,
+                                updateStatus = updateStatus,
                                 onAdd = {
                                     pickEpub.launch(
                                         arrayOf("application/epub+zip", "application/octet-stream", "*/*"),
@@ -80,8 +82,8 @@ class MainActivity : ComponentActivity() {
                                 },
                                 onDelete = { libraryVm.deleteBook(it.id) },
                                 onDismissMessage = { libraryVm.clearMessage() },
-                                onSaveElevenKey = { libraryVm.saveElevenKey(it) },
                                 onVoiceMode = { libraryVm.setVoiceMode(it) },
+                                onInstallUpdate = { libraryVm.installUpdate(it) },
                             )
                         }
                         composable("reader") {
