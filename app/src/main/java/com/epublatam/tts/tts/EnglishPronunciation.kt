@@ -19,10 +19,26 @@ object EnglishPronunciation {
         Regex("""\bPoirot\b""", RegexOption.IGNORE_CASE) to "Poaró",
         Regex("""\bNew\s+York\b""", RegexOption.IGNORE_CASE) to "Niu York",
         Regex("""\bScotland\s+Yard\b""", RegexOption.IGNORE_CASE) to "Escótland Yard",
+        Regex("""\bA[iy]den\b""", RegexOption.IGNORE_CASE) to "Éiden",
+        Regex("""\bAidan\b""", RegexOption.IGNORE_CASE) to "Éiden",
+        Regex("""\bHayden\b""", RegexOption.IGNORE_CASE) to "Héiden",
+        Regex("""\bJayden\b""", RegexOption.IGNORE_CASE) to "Yéiden",
+        Regex("""\bBrayden\b""", RegexOption.IGNORE_CASE) to "Bréiden",
+        Regex("""\bCayden\b""", RegexOption.IGNORE_CASE) to "Kéiden",
+        Regex("""\bRaiden\b""", RegexOption.IGNORE_CASE) to "Réiden",
     )
 
     /** Una sola palabra → fonética española aproximada. */
     private val WORDS: Map<String, String> = mapOf(
+        "ayden" to "Éiden",
+        "aiden" to "Éiden",
+        "aidan" to "Éiden",
+        "aden" to "Éiden",
+        "hayden" to "Héiden",
+        "jayden" to "Yéiden",
+        "brayden" to "Bréiden",
+        "cayden" to "Kéiden",
+        "raiden" to "Réiden",
         "blackheart" to "Blákhart",
         "black" to "Blak",
         "heart" to "Hart",
@@ -37,6 +53,19 @@ object EnglishPronunciation {
         "doyle" to "Doil",
         "conan" to "Cóuan",
         "arthur" to "Árzur",
+        "james" to "Yeims",
+        "john" to "Yon",
+        "jack" to "Yak",
+        "george" to "Yory",
+        "william" to "Uíliam",
+        "michael" to "Máikel",
+        "david" to "Déivid",
+        "richard" to "Ríchard",
+        "robert" to "Róbert",
+        "edward" to "Éduard",
+        "henry" to "Hénri",
+        "charles" to "Charls",
+        "thomas" to "Tómas",
         "miss" to "Mis",
         "mister" to "Míster",
         "mr" to "Míster",
@@ -118,50 +147,34 @@ object EnglishPronunciation {
     fun looksEnglish(word: String): Boolean {
         if (word.length < 3) return false
         val lower = word.lowercase()
-        // Palabras españolas comunes: no tocar
         if (lower in SPANISH_STOP) return false
         if (lower.any { it in "áéíóúüñ" }) return false
         val engHints = listOf(
             "th", "wh", "gh", "ck", "ph", "tion", "ough", "ight", "kn", "wr",
-            "ee", "oo", "sh", "ch", "ing", "ment", "ness", "ship", "ward",
+            "ee", "oo", "ayden", "aiden", "ayde",
         )
         if (engHints.any { lower.contains(it) }) return true
-        // Mayúscula interna tipo BlackHeart / o Title Case inglés sin tilde
-        if (word.first().isUpperCase() && word.drop(1).any { it.isLowerCase() }) {
-            // Nombres propios: si no parece español típico
-            if (!lower.endsWith("ción") && !lower.endsWith("dad") && !lower.endsWith("mente")) {
-                val vowels = lower.count { it in "aeiou" }
-                if (vowels > 0 && lower.length >= 4) return true
-            }
-        }
+        // Nombres tipo Jayden / Hayden
+        if (lower.endsWith("ayden") || lower.endsWith("aiden")) return true
         return false
     }
 
-    /** Aprox. grosera letra a letra-ish para Piper. */
+    /** Aprox. para nombres ingleses; no reescribir todo el español. */
     private fun approxEnglish(word: String): String {
         var s = word.lowercase()
-        s = s.replace("tion", "shon")
-            .replace("sion", "shon")
+        s = s.replace("ayden", "éiden")
+            .replace("aiden", "éiden")
+            .replace("ay", "ei")
+            .replace("tion", "shon")
             .replace("ough", "af")
             .replace("ight", "ait")
             .replace("kn", "n")
-            .replace("wr", "r")
             .replace("ph", "f")
             .replace("th", "t")
             .replace("wh", "gu")
             .replace("ck", "k")
-            .replace("ch", "ch")
-            .replace("sh", "sh")
             .replace("ee", "i")
             .replace("oo", "u")
-            .replace("ea", "i")
-            .replace("ay", "ei")
-            .replace("oy", "oi")
-            .replace("qu", "cu")
-            .replace("j", "y")
-            .replace("w", "gu")
-            .replace("y", "i")
-            .replace("c", "k")
         return s.replaceFirstChar { it.uppercase() }
     }
 
@@ -195,7 +208,7 @@ object EdgeSsmlText {
         var i = 0
         while (i < xml.length) {
             if (xml.startsWith("\n\n", i)) {
-                out.append(HumanPacing.ssmlBreak(HumanPacing.PARAGRAPH_MS))
+                out.append(' ')
                 while (i < xml.length && xml[i] == '\n') i++
                 continue
             }
@@ -206,27 +219,11 @@ object EdgeSsmlText {
             when (c) {
                 ',' -> if (afterSpaceOrEnd) out.append(HumanPacing.ssmlBreak(HumanPacing.COMMA_MS))
                 ';', ':' -> if (afterSpaceOrEnd) out.append(HumanPacing.ssmlBreak(HumanPacing.COLON_MS))
-                '.', '…' -> if (afterSpaceOrEnd && !isAbbreviationPeriod(xml, i)) {
-                    out.append(HumanPacing.ssmlBreak(HumanPacing.PERIOD_MS))
-                }
-                '?', '!' -> if (afterSpaceOrEnd) {
-                    out.append(HumanPacing.ssmlBreak(HumanPacing.QUESTION_MS))
-                }
+                // Punto / ? / !: el silencio va DESPUÉS del audio (delay), no acá.
             }
             i++
         }
         return out.toString()
-    }
-
-    private val ABBREV = setOf(
-        "dr", "sr", "sra", "srta", "ud", "uds", "etc", "mr", "mrs", "ms", "st", "vs",
-    )
-
-    private fun isAbbreviationPeriod(s: String, periodIndex: Int): Boolean {
-        var start = periodIndex - 1
-        while (start >= 0 && s[start].isLetter()) start--
-        val word = s.substring(start + 1, periodIndex).lowercase()
-        return word in ABBREV
     }
 
     private fun xmlEscape(s: String): String =
