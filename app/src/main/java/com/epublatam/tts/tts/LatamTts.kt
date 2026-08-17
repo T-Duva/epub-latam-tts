@@ -279,8 +279,11 @@ private class AudioPlayer(private val context: Context) {
 class ElevenNarrator(private val context: Context) {
     companion object {
         private const val TAG = "ElevenNarrator"
-        private const val VOICE_ID = "pFZP5JQG7iQjIQuC4Bku"
-        private const val MODEL = "eleven_multilingual_v2"
+        // Jessica: más neutra. Con language_code=es evita acento inglés en palabras latinas.
+        private const val VOICE_ID = "cgSgspJ2msm6clMCkdW9"
+        // flash_v2_5 soporta language_code (multilingual_v2 no lo respeta bien con voces EN)
+        private const val MODEL = "eleven_flash_v2_5"
+        private const val LANGUAGE = "es"
     }
 
     private val client = OkHttpClient.Builder()
@@ -295,8 +298,8 @@ class ElevenNarrator(private val context: Context) {
 
     var status = TtsStatus(
         engine = TtsEngineKind.ELEVEN,
-        voiceLabel = "Lily · ElevenLabs",
-        message = "Voz con alma",
+        voiceLabel = "Jessica · español",
+        message = "Voz con alma · pronunciación en español",
     )
         private set
 
@@ -304,8 +307,8 @@ class ElevenNarrator(private val context: Context) {
         apiKey = key
         status = TtsStatus(
             engine = TtsEngineKind.ELEVEN,
-            voiceLabel = "Lily · ElevenLabs",
-            message = "Voz con alma — interpreta el texto",
+            voiceLabel = "Jessica · español",
+            message = "Pronunciación forzada a español (no inglés)",
         )
     }
 
@@ -369,14 +372,24 @@ class ElevenNarrator(private val context: Context) {
     }
 
     private fun synthesize(text: String): ByteArray {
+        // Normaliza tipografía para que el motor no “piense” en inglés
+        val spanish = text
+            .replace('…', '.')
+            .replace('–', '-')
+            .replace('—', ',')
+            .replace('"', '«')
+            .replace('"', '»')
+            .trim()
+
         val body = JSONObject()
-            .put("text", text)
+            .put("text", spanish)
             .put("model_id", MODEL)
+            .put("language_code", LANGUAGE)
             .put(
                 "voice_settings",
                 JSONObject()
-                    .put("stability", 0.35)
-                    .put("similarity_boost", 0.8)
+                    .put("stability", 0.40)
+                    .put("similarity_boost", 0.78)
                     .put("use_speaker_boost", true),
             )
             .toString()
