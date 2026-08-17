@@ -31,13 +31,19 @@ import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Slider
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.epublatam.tts.ReaderUiState
@@ -49,11 +55,15 @@ fun LibraryScreen(
     books: List<BookMeta>,
     busy: Boolean,
     message: String?,
+    elevenKey: String,
     onAdd: () -> Unit,
     onOpen: (BookMeta) -> Unit,
     onDelete: (BookMeta) -> Unit,
     onDismissMessage: () -> Unit,
+    onSaveElevenKey: (String) -> Unit,
 ) {
+    var keyDraft by remember(elevenKey) { mutableStateOf(elevenKey) }
+
     Scaffold(
         topBar = { TopAppBar(title = { Text("EPUB voz persona") }) },
         floatingActionButton = {
@@ -69,10 +79,23 @@ fun LibraryScreen(
                 .padding(16.dp),
         ) {
             Text(
-                "Importá un EPUB y escuchalo con voz de persona (español México). " +
-                    "Hace pausas en comas y puntos. Necesita internet.",
+                "Para voz con alma (interpreta el texto): creá cuenta gratis en elevenlabs.io, " +
+                    "copiá tu API Key y pegala acá. Sin clave usa voz básica (Dalia).",
                 style = MaterialTheme.typography.bodyMedium,
             )
+            Spacer(Modifier.height(8.dp))
+            OutlinedTextField(
+                value = keyDraft,
+                onValueChange = { keyDraft = it },
+                modifier = Modifier.fillMaxWidth(),
+                label = { Text("Clave ElevenLabs (opcional)") },
+                singleLine = true,
+                visualTransformation = PasswordVisualTransformation(),
+            )
+            Spacer(Modifier.height(6.dp))
+            Button(onClick = { onSaveElevenKey(keyDraft) }) {
+                Text("Guardar clave")
+            }
             Spacer(Modifier.height(12.dp))
             if (busy) {
                 CircularProgressIndicator(Modifier.align(Alignment.CenterHorizontally))

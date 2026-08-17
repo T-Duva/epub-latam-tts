@@ -5,16 +5,21 @@ import android.media.AudioAttributes
 import android.media.MediaPlayer
 import android.util.Log
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
 import okhttp3.Headers
+import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
+import okhttp3.RequestBody.Companion.toRequestBody
 import okhttp3.Response
 import okhttp3.WebSocket
 import okhttp3.WebSocketListener
 import okio.ByteString
+import org.json.JSONObject
 import java.io.ByteArrayOutputStream
 import java.io.File
 import java.security.MessageDigest
@@ -29,7 +34,7 @@ import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
 import kotlin.math.roundToInt
 
-enum class TtsEngineKind { PERSONA, SISTEMA }
+enum class TtsEngineKind { ELEVEN, EDGE }
 
 data class TtsStatus(
     val engine: TtsEngineKind,
@@ -38,13 +43,294 @@ data class TtsStatus(
 )
 
 /**
- * Voz de persona (Microsoft Neural, español México).
- * Sin fallback a la voz robótica del teléfono.
- * Parte el texto en respiraciones (comas/puntos) con silencios reales.
+ * Elige la mejor voz disponible.
+ * ElevenLabs (clave) = voz con alma. Edge = respaldo sin clave, sin pausas eternas.
  */
-class PersonaVoice(private val context: Context) {
+class PersonaVoice(
+    private val context: Context,
+    private val apiKeyProvider: suspend () -> String?,
+) {
+    private val edge = EdgeNarrator(context)
+    private val eleven = ElevenNarrator(context)
+    private var mode: TtsEngineKind = TtsEngineKind.EDGE
+
+    var lastStatus: TtsStatus = edge.status
+        private set
+
+    suspend fun prepare(): TtsStatus {
+        val key = apiKeyProvider()?.trim().orEmpty()
+        if (key.isNotBlank()) {
+            eleven.prepare(key)
+            mode = TtsEngineKind.ELEVEN
+            lastStatus = eleven.status
+            return lastStatus
+        }
+        edge.prepare()
+        mode = TtsEngineKind.EDGE
+        lastStatus = edge.status.copy(
+            message = "Sin clave ElevenLabs: voz básica. Pegá una clave gratis para voz con alma.",
+        )
+        return lastStatus
+    }
+
+    suspend fun speak(text: String, rate: Float, onDone: () -> Unit) {
+        when (mode) {
+            TtsEngineKind.ELEVEN -> eleven.speak(text, rate, onDone)
+            TtsEngineKind.EDGE -> edge.speak(text, rate, onDone)
+        }
+    }
+
+    fun stop() {
+        edge.stop()
+        eleven.stop()
+    }
+
+    fun pause() {
+        edge.pause()
+        eleven.pause()
+    }
+
+    fun release() {
+        edge.release()
+        eleven.release()
+    }
+}
+
+/** Trocea para narración: párrafos/frases largas (NO por cada coma). */
+object StoryChunks {
+    fun split(raw: String, maxChars: Int = 700): List<String> {
+        var t = raw
+            .replace('\u00A0', ' ')
+            .replace(Regex("[\\t\\x0B\\f\\r]+"), " ")
+            .replace(Regex("\\n{3,}"), "\n\n")
+            .replace(Regex("([.!?;:,])(?=\\S)"), "$1 ")
+            .replace(Regex(" {2,}"), " ")
+            .trim()
+        if (t.isEmpty()) return emptyList()
+
+        // Primero por párrafos
+        val paragraphs = t.split(Regex("\\n{2,}")).map { it.trim() }.filter { it.isNotEmpty() }
+        val out = mutableListOf<String>()
+        for (p in paragraphs) {
+            if (p.length <= maxChars) {
+                out += p
+            } else {
+                out += splitSentences(p, maxChars)
+            }
+        }
+        return out
+    }
+
+    private fun splitSentences(text: String, maxChars: Int): List<String> {
+        val sentences = text.split(Regex("(?<=[.!?…])\\s+")).map { it.trim() }.filter { it.isNotEmpty() }
+        val out = mutableListOf<String>()
+        val buf = StringBuilder()
+        for (s in sentences) {
+            if (s.length > maxChars) {
+                if (buf.isNotEmpty()) {
+                    out += buf.toString().trim()
+                    buf.clear()
+                }
+                var rest = s
+                while (rest.length > maxChars) {
+                    var cut = rest.lastIndexOf(' ', maxChars)
+                    if (cut < maxChars / 2) cut = maxChars
+                    out += rest.substring(0, cut).trim()
+                    rest = rest.substring(cut).trim()
+                }
+                if (rest.isNotEmpty()) out += rest
+                continue
+            }
+            if (buf.isNotEmpty() && buf.length + 1 + s.length > maxChars) {
+                out += buf.toString().trim()
+                buf.clear()
+            }
+            if (buf.isNotEmpty()) buf.append(' ')
+            buf.append(s)
+        }
+        if (buf.isNotEmpty()) out += buf.toString().trim()
+        return out
+    }
+}
+
+private suspend fun playMp3(playerHolder: Array<MediaPlayer?>, file: File, cancelled: () -> Boolean) =
+    suspendCancellableCoroutine { cont ->
+        if (cancelled()) {
+            cont.resume(Unit)
+            return@suspendCancellableCoroutine
+        }
+        val mp = MediaPlayer().apply {
+            setAudioAttributes(
+                AudioAttributes.Builder()
+                    .setUsage(AudioAttributes.USAGE_MEDIA)
+                    .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
+                    .build(),
+            )
+            setDataSource(file.absolutePath)
+            setOnCompletionListener {
+                it.release()
+                if (playerHolder[0] === it) playerHolder[0] = null
+                if (cont.isActive) cont.resume(Unit)
+            }
+            setOnErrorListener { p, _, _ ->
+                p.release()
+                if (playerHolder[0] === p) playerHolder[0] = null
+                if (cont.isActive) cont.resume(Unit)
+                true
+            }
+            prepare()
+            start()
+        }
+        playerHolder[0] = mp
+        cont.invokeOnCancellation {
+            runCatching {
+                mp.stop()
+                mp.release()
+            }
+            playerHolder[0] = null
+        }
+    }
+
+/**
+ * ElevenLabs: voz con interpretación / alma.
+ * Voice: Lily (narración cálida) + multilingual v2 + stability baja = más expresiva.
+ */
+class ElevenNarrator(private val context: Context) {
     companion object {
-        private const val TAG = "PersonaVoice"
+        private const val TAG = "ElevenNarrator"
+        // Lily — narración cálida (premade)
+        private const val VOICE_ID = "pFZP5JQG7iQjIQuC4Bku"
+        private const val MODEL = "eleven_multilingual_v2"
+    }
+
+    private val client = OkHttpClient.Builder()
+        .connectTimeout(30, TimeUnit.SECONDS)
+        .readTimeout(120, TimeUnit.SECONDS)
+        .build()
+
+    private val playerHolder = arrayOfNulls<MediaPlayer>(1)
+    @Volatile private var cancelled = false
+    private val cacheDir = File(context.cacheDir, "eleven_voice").also { it.mkdirs() }
+    private var apiKey: String = ""
+
+    var status = TtsStatus(
+        engine = TtsEngineKind.ELEVEN,
+        voiceLabel = "Lily · ElevenLabs",
+        message = "Voz con alma (interpretación)",
+    )
+        private set
+
+    fun prepare(key: String) {
+        apiKey = key
+        status = TtsStatus(
+            engine = TtsEngineKind.ELEVEN,
+            voiceLabel = "Lily · ElevenLabs",
+            message = "Voz con alma — interpreta el texto",
+        )
+    }
+
+    suspend fun speak(text: String, rate: Float, onDone: () -> Unit) {
+        stop()
+        cancelled = false
+        val chunks = StoryChunks.split(text, maxChars = 900)
+        if (chunks.isEmpty()) {
+            withContext(Dispatchers.Main) { onDone() }
+            return
+        }
+        withContext(Dispatchers.IO) {
+            coroutineScope {
+                var nextJob = if (chunks.size > 1) {
+                    async { runCatching { synthesize(chunks[1]) }.getOrNull() }
+                } else {
+                    null
+                }
+                for ((index, chunk) in chunks.withIndex()) {
+                    if (cancelled) break
+                    val audio = if (index == 0) {
+                        synthesize(chunk)
+                    } else {
+                        nextJob?.await() ?: synthesize(chunk)
+                    }
+                    if (index + 2 < chunks.size) {
+                        nextJob = async { runCatching { synthesize(chunks[index + 2]) }.getOrNull() }
+                    } else {
+                        nextJob = null
+                    }
+                    val file = File(cacheDir, "e_${UUID.randomUUID()}.mp3")
+                    file.writeBytes(audio)
+                    try {
+                        playMp3(playerHolder, file) { cancelled }
+                        if (!cancelled && index < chunks.lastIndex) delay(120)
+                    } finally {
+                        file.delete()
+                    }
+                }
+            }
+            if (!cancelled) withContext(Dispatchers.Main) { onDone() }
+        }
+    }
+
+    private fun synthesize(text: String): ByteArray {
+        val body = JSONObject()
+            .put("text", text)
+            .put("model_id", MODEL)
+            .put(
+                "voice_settings",
+                JSONObject()
+                    .put("stability", 0.28) // más bajo = más vida / variación
+                    .put("similarity_boost", 0.82)
+                    .put("style", 0.55)
+                    .put("use_speaker_boost", true),
+            )
+            .toString()
+
+        val request = Request.Builder()
+            .url("https://api.elevenlabs.io/v1/text-to-speech/$VOICE_ID?output_format=mp3_44100_128")
+            .addHeader("xi-api-key", apiKey)
+            .addHeader("Accept", "audio/mpeg")
+            .addHeader("Content-Type", "application/json")
+            .post(body.toRequestBody("application/json".toMediaType()))
+            .build()
+
+        client.newCall(request).execute().use { response ->
+            if (!response.isSuccessful) {
+                val err = response.body?.string().orEmpty()
+                Log.e(TAG, "ElevenLabs ${response.code}: $err")
+                error(
+                    when (response.code) {
+                        401, 403 -> "Clave ElevenLabs inválida. Revisala en la pantalla principal."
+                        429 -> "Límite gratis de ElevenLabs agotado este mes."
+                        else -> "ElevenLabs error ${response.code}"
+                    },
+                )
+            }
+            return response.body?.bytes() ?: error("Sin audio")
+        }
+    }
+
+    fun stop() {
+        cancelled = true
+        playerHolder[0]?.runCatching {
+            stop()
+            release()
+        }
+        playerHolder[0] = null
+    }
+
+    fun pause() {
+        playerHolder[0]?.takeIf { it.isPlaying }?.pause()
+    }
+
+    fun release() = stop()
+}
+
+/**
+ * Edge neural (Dalia). Sin clave.
+ * Importante: NO pedir un audio por cada coma (eso causaba ~8s de espera).
+ */
+class EdgeNarrator(private val context: Context) {
+    companion object {
+        private const val TAG = "EdgeNarrator"
         private const val TRUSTED_TOKEN = "6A5AA1D4EAFF4E9FB37E23D68491D6F4"
         private const val CHROMIUM = "143.0.3650.75"
         private const val VOICE = "es-MX-DaliaNeural"
@@ -58,84 +344,70 @@ class PersonaVoice(private val context: Context) {
         .retryOnConnectionFailure(true)
         .build()
 
-    private var player: MediaPlayer? = null
+    private val playerHolder = arrayOfNulls<MediaPlayer>(1)
     @Volatile private var cancelled = false
-    private val cacheDir = File(context.cacheDir, "persona_voice").also { it.mkdirs() }
+    private val cacheDir = File(context.cacheDir, "edge_voice").also { it.mkdirs() }
 
-    var lastStatus: TtsStatus = TtsStatus(
-        engine = TtsEngineKind.PERSONA,
+    var status = TtsStatus(
+        engine = TtsEngineKind.EDGE,
         voiceLabel = "Dalia · México",
-        message = "Voz de persona (necesita internet)",
+        message = "Voz básica (sin clave)",
     )
         private set
 
-    suspend fun prepare(): TtsStatus {
-        // Prueba real: si esto falla, no fingimos que hay voz buena
-        synthesizePlain("Listo.", "-15%")
-        lastStatus = TtsStatus(
-            engine = TtsEngineKind.PERSONA,
+    suspend fun prepare() {
+        synthesizePlain("Listo.", "-5%")
+        status = TtsStatus(
+            engine = TtsEngineKind.EDGE,
             voiceLabel = "Dalia · México",
-            message = "Voz de persona · con pausas naturales",
+            message = "Voz básica. Para alma: clave ElevenLabs gratis abajo.",
         )
-        return lastStatus
     }
 
     suspend fun speak(text: String, rate: Float, onDone: () -> Unit) {
         stop()
         cancelled = false
-        val breaths = BreathSplitter.split(text)
-        if (breaths.isEmpty()) {
+        val chunks = StoryChunks.split(text, maxChars = 900)
+        if (chunks.isEmpty()) {
             withContext(Dispatchers.Main) { onDone() }
             return
         }
-        // Más lento = más humano
-        val edgeRate = toEdgeRate(rate * 0.88f)
+        val edgeRate = toEdgeRate(rate)
         withContext(Dispatchers.IO) {
-            for ((index, breath) in breaths.withIndex()) {
-                if (cancelled) break
-                val audio = try {
-                    synthesizePlain(breath.text, edgeRate)
-                } catch (e: Exception) {
-                    Log.e(TAG, "Fallo síntesis: ${e.message}", e)
-                    // Un reintento con token nuevo
-                    delay(400)
-                    synthesizePlain(breath.text, edgeRate)
+            coroutineScope {
+                var nextJob = if (chunks.size > 1) {
+                    async { runCatching { synthesizePlain(chunks[1], edgeRate) }.getOrNull() }
+                } else {
+                    null
                 }
-                if (cancelled || audio.isEmpty()) continue
-                val file = File(cacheDir, "b_${UUID.randomUUID()}.mp3")
-                file.writeBytes(audio)
-                try {
-                    playFile(file)
-                    if (!cancelled && index < breaths.lastIndex) {
-                        delay(breath.pauseAfterMs)
+                for ((index, chunk) in chunks.withIndex()) {
+                    if (cancelled) break
+                    val audio = if (index == 0) {
+                        synthesizePlain(chunk, edgeRate)
+                    } else {
+                        nextJob?.await() ?: synthesizePlain(chunk, edgeRate)
                     }
-                } finally {
-                    file.delete()
+                    nextJob = if (index + 2 < chunks.size) {
+                        async { runCatching { synthesizePlain(chunks[index + 2], edgeRate) }.getOrNull() }
+                    } else {
+                        null
+                    }
+                    val file = File(cacheDir, "d_${UUID.randomUUID()}.mp3")
+                    file.writeBytes(audio)
+                    try {
+                        playMp3(playerHolder, file) { cancelled }
+                        if (!cancelled && index < chunks.lastIndex) delay(80)
+                    } finally {
+                        file.delete()
+                    }
                 }
             }
-            if (!cancelled) {
-                withContext(Dispatchers.Main) { onDone() }
-            }
+            if (!cancelled) withContext(Dispatchers.Main) { onDone() }
         }
     }
-
-    fun stop() {
-        cancelled = true
-        player?.runCatching {
-            stop()
-            release()
-        }
-        player = null
-    }
-
-    fun pause() {
-        player?.takeIf { it.isPlaying }?.pause()
-    }
-
-    fun release() = stop()
 
     private fun toEdgeRate(userRate: Float): String {
-        val pct = ((userRate.coerceIn(0.55f, 1.5f) - 1f) * 100f).roundToInt()
+        val pct = ((userRate.coerceIn(0.7f, 1.4f) - 1f) * 100f).roundToInt()
         return if (pct >= 0) "+$pct%" else "$pct%"
     }
 
@@ -160,11 +432,8 @@ class PersonaVoice(private val context: Context) {
     }
 
     private fun xmlEscape(s: String): String =
-        s.replace("&", "&amp;")
-            .replace("<", "&lt;")
-            .replace(">", "&gt;")
+        s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
-    /** SSML idéntico al de edge-tts (Python). Sin tags break (Microsoft los ignora/rechaza). */
     private fun buildSsml(text: String, rate: String): String {
         val escaped = xmlEscape(text)
         return "<speak version='1.0' xmlns='http://www.w3.org/2001/10/synthesis' xml:lang='en-US'>" +
@@ -198,11 +467,9 @@ class PersonaVoice(private val context: Context) {
                 .add(
                     "User-Agent",
                     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 " +
-                        "(KHTML, like Gecko) Chrome/$major.0.0.0 Safari/537.36 " +
-                        "Edg/$major.0.0.0",
+                        "(KHTML, like Gecko) Chrome/$major.0.0.0 Safari/537.36 Edg/$major.0.0.0",
                 )
-                .add("Accept-Encoding", "gzip, deflate, br")
-                .add("Accept-Language", "es-MX,es;q=0.9,en;q=0.8")
+                .add("Accept-Language", "es-MX,es;q=0.9")
                 .add("Cookie", "muid=${connectId().uppercase()};")
                 .build()
 
@@ -214,9 +481,7 @@ class PersonaVoice(private val context: Context) {
                 if (finished.compareAndSet(false, true) && cont.isActive) {
                     val bytes = audio.toByteArray()
                     if (bytes.isEmpty()) {
-                        cont.resumeWithException(
-                            IllegalStateException("No llegó audio. Revisá internet."),
-                        )
+                        cont.resumeWithException(IllegalStateException("Sin audio. Revisá internet."))
                     } else {
                         cont.resume(bytes)
                     }
@@ -233,104 +498,48 @@ class PersonaVoice(private val context: Context) {
                 request,
                 object : WebSocketListener() {
                     override fun onOpen(webSocket: WebSocket, response: Response) {
-                        val config =
+                        webSocket.send(
                             "X-Timestamp:${dateString()}\r\n" +
                                 "Content-Type:application/json; charset=utf-8\r\n" +
                                 "Path:speech.config\r\n\r\n" +
-                                """{"context":{"synthesis":{"audio":{"metadataoptions":{"sentenceBoundaryEnabled":"true","wordBoundaryEnabled":"false"},"outputFormat":"audio-24khz-48kbitrate-mono-mp3"}}}}"""
-                        webSocket.send(config)
-
-                        val ssmlMsg =
+                                """{"context":{"synthesis":{"audio":{"metadataoptions":{"sentenceBoundaryEnabled":"true","wordBoundaryEnabled":"false"},"outputFormat":"audio-24khz-48kbitrate-mono-mp3"}}}}""",
+                        )
+                        webSocket.send(
                             "X-RequestId:$reqId\r\n" +
                                 "Content-Type:application/ssml+xml\r\n" +
                                 "X-Timestamp:${dateString()}Z\r\n" +
                                 "Path:ssml\r\n\r\n" +
-                                ssml
-                        webSocket.send(ssmlMsg)
+                                ssml,
+                        )
                     }
 
                     override fun onMessage(webSocket: WebSocket, text: String) {
-                        when {
-                            text.contains("Path:turn.end") -> {
-                                webSocket.close(1000, null)
-                                completeOk()
-                            }
-                            text.contains("Path:response") || text.contains("Path:turn.start") ||
-                                text.contains("Path:audio.metadata") -> Unit
-                            else -> Log.d(TAG, "msg: ${text.take(120)}")
+                        if (text.contains("Path:turn.end")) {
+                            webSocket.close(1000, null)
+                            completeOk()
                         }
                     }
 
                     override fun onMessage(webSocket: WebSocket, bytes: ByteString) {
                         val data = bytes.toByteArray()
                         if (data.size < 2) return
-                        val headerLen = ((data[0].toInt() and 0xff) shl 8) or (data[1].toInt() and 0xff)
-                        if (headerLen + 2 > data.size) return
-                        val header = String(data, 2, headerLen, Charsets.UTF_8)
-                        if (!header.contains("Path:audio")) return
-                        val payloadStart = 2 + headerLen
-                        // Algunos mensajes traen \r\n extra tras el header; edge-tts usa headerLen+2
-                        // desde el inicio del buffer de headers (después de los 2 bytes de longitud).
-                        // get_headers_and_data: data[header_length + 2 :] relativo al buffer SIN los 2 bytes?
-                        // En Python: parameters, data = get_headers_and_data(received.data, header_length)
-                        // donde received.data INCLUYE los 2 bytes, y header_length es solo del header text.
-                        // get_headers_and_data(data, header_length): headers from data[:header_length], 
-                        // body from data[header_length + 2:]
-                        // Wait - they pass received.data which is FULL binary including first 2 bytes!
-                        // Looking again:
-                        // header_length = int.from_bytes(received.data[:2], "big")
-                        // parameters, data = get_headers_and_data(received.data, header_length)
-                        // 
-                        // get_headers_and_data(data, header_length):
-                        //   for line in data[:header_length].split...
-                        //   return headers, data[header_length + 2:]
-                        //
-                        // That would parse data[:header_length] starting from byte 0 which is the length bytes!
-                        // So they're passing wrong? Let me look again...
-                        //
-                        // Actually: get_headers_and_data(received.data, header_length) 
-                        // uses data[:header_length] for headers - that includes the 2 length bytes at start
-                        // unless header_length counts from start...
-                        // 
-                        // From communicate.py:
-                        // header_length = int.from_bytes(received.data[:2], "big")
-                        // parameters, data = get_headers_and_data(received.data, header_length)
-                        //
-                        // And get_headers_and_data:
-                        // headers from data[:header_length] 
-                        // body = data[header_length + 2:]
-                        //
-                        // This seems like a bug unless... they meant get_headers_and_data(received.data[2:], header_length)?
-                        // Looking at many Kotlin ports - they use:
-                        // val header = String(data, 2, headerLen)
-                        // val audioData = data.copyOfRange(2 + headerLen, data.size)
-                        //
-                        // Some use 2 + headerLen + 2 for the \r\n\r\n
-                        // Python: data[header_length + 2:] on FULL message means skip first header_length bytes
-                        // THEN skip 2 more. If header_length is only the header text length, and first 2 bytes
-                        // are length prefix, the Python code would be wrong unless header_length includes something else.
-                        //
-                        // From edge-tts issues and working Android ports (capacitor-edge-tts):
-                        // typically: offset = 2 + headerLength; if there's \r\n\r\n after headers it's included in headerLength
-                        //
-                        // I'll use: find \r\n\r\n after the 2-byte length
-
-                        val sep = indexOfCrLfCrLf(data, 2)
-                        val payload = if (sep >= 0) {
-                            data.copyOfRange(sep + 4, data.size)
-                        } else {
-                            data.copyOfRange(2 + headerLen, data.size)
+                        var i = 2
+                        while (i + 3 < data.size) {
+                            if (data[i] == '\r'.code.toByte() && data[i + 1] == '\n'.code.toByte() &&
+                                data[i + 2] == '\r'.code.toByte() && data[i + 3] == '\n'.code.toByte()
+                            ) {
+                                val payload = data.copyOfRange(i + 4, data.size)
+                                if (payload.isNotEmpty()) audio.write(payload)
+                                return
+                            }
+                            i++
                         }
-                        if (payload.isNotEmpty()) audio.write(payload)
                     }
 
                     override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
-                        Log.e(TAG, "ws fail: ${response?.code} ${t.message}")
+                        Log.e(TAG, "ws fail ${response?.code}: ${t.message}")
                         completeErr(
-                            IllegalStateException(
-                                "No se pudo usar la voz de persona. Activá internet e intentá de nuevo.",
-                                t,
-                            ),
+                            IllegalStateException("Sin internet para la voz. Activá datos/Wi‑Fi.", t),
                         )
                     }
 
@@ -346,106 +555,18 @@ class PersonaVoice(private val context: Context) {
             }
         }
 
-    private fun indexOfCrLfCrLf(data: ByteArray, from: Int): Int {
-        var i = from
-        while (i + 3 < data.size) {
-            if (data[i] == '\r'.code.toByte() && data[i + 1] == '\n'.code.toByte() &&
-                data[i + 2] == '\r'.code.toByte() && data[i + 3] == '\n'.code.toByte()
-            ) {
-                return i
-            }
-            i++
+    fun stop() {
+        cancelled = true
+        playerHolder[0]?.runCatching {
+            stop()
+            release()
         }
-        return -1
+        playerHolder[0] = null
     }
 
-    private suspend fun playFile(file: File) = suspendCancellableCoroutine { cont ->
-        if (cancelled) {
-            cont.resume(Unit)
-            return@suspendCancellableCoroutine
-        }
-        val mp = MediaPlayer().apply {
-            setAudioAttributes(
-                AudioAttributes.Builder()
-                    .setUsage(AudioAttributes.USAGE_MEDIA)
-                    .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
-                    .build(),
-            )
-            setDataSource(file.absolutePath)
-            setOnCompletionListener {
-                it.release()
-                if (player === it) player = null
-                if (cont.isActive) cont.resume(Unit)
-            }
-            setOnErrorListener { p, _, _ ->
-                p.release()
-                if (player === p) player = null
-                if (cont.isActive) cont.resume(Unit)
-                true
-            }
-            prepare()
-            start()
-        }
-        player = mp
-        cont.invokeOnCancellation {
-            runCatching {
-                mp.stop()
-                mp.release()
-            }
-            player = null
-        }
+    fun pause() {
+        playerHolder[0]?.takeIf { it.isPlaying }?.pause()
     }
-}
 
-data class BreathUnit(val text: String, val pauseAfterMs: Long)
-
-/** Parte el texto como respira una persona: coma = pausa corta, punto = pausa larga. */
-object BreathSplitter {
-    fun split(raw: String): List<BreathUnit> {
-        var t = raw
-            .replace('\u00A0', ' ')
-            .replace(Regex("[\\t\\x0B\\f\\r]+"), " ")
-            .replace(Regex("\\n{2,}"), ". ")
-            .replace(Regex("\\n"), " ")
-            .replace(Regex("([.!?;:,])(?=\\S)"), "$1 ")
-            .replace(Regex(" {2,}"), " ")
-            .trim()
-        if (t.isEmpty()) return emptyList()
-
-        // Cada trozo termina en puntuación o es un fragmento corto
-        val tokens = Regex("([^,.!?;:…]+[,.!?;:…]?)").findAll(t)
-            .map { it.value.trim() }
-            .filter { it.isNotBlank() }
-            .toList()
-
-        val units = mutableListOf<BreathUnit>()
-        val buf = StringBuilder()
-
-        fun flush(pause: Long) {
-            val piece = buf.toString().trim()
-            if (piece.isNotEmpty()) {
-                units += BreathUnit(piece, pause)
-            }
-            buf.clear()
-        }
-
-        for (tok in tokens) {
-            if (buf.isNotEmpty()) buf.append(' ')
-            buf.append(tok)
-            val end = tok.trimEnd().lastOrNull()
-            val pause = when (end) {
-                '.', '!', '?', '…' -> 550L
-                ';' -> 380L
-                ':' -> 320L
-                ',' -> 280L
-                else -> 0L
-            }
-            // Respirar siempre en puntuación, o si el buffer ya es largo
-            if (pause > 0 || buf.length >= 90) {
-                flush(if (pause > 0) pause else 220L)
-            }
-        }
-        flush(0L)
-        return units
-    }
+    fun release() = stop()
 }

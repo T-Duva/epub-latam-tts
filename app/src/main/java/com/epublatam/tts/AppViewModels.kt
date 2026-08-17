@@ -25,7 +25,7 @@ data class ReaderUiState(
     val epub: EpubBook? = null,
     val chapterIndex: Int = 0,
     val isPlaying: Boolean = false,
-    val rate: Float = 0.92f,
+    val rate: Float = 1.0f,
     val status: TtsStatus? = null,
     val error: String? = null,
     val loading: Boolean = false,
@@ -40,9 +40,29 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
     val busy = _busy.asStateFlow()
     private val _message = MutableStateFlow<String?>(null)
     val message = _message.asStateFlow()
+    private val _elevenKey = MutableStateFlow("")
+    val elevenKey = _elevenKey.asStateFlow()
+
+    init {
+        viewModelScope.launch {
+            _elevenKey.value = store.getElevenLabsKey()
+        }
+    }
 
     fun clearMessage() {
         _message.value = null
+    }
+
+    fun saveElevenKey(key: String) {
+        viewModelScope.launch {
+            store.setElevenLabsKey(key)
+            _elevenKey.value = key.trim()
+            _message.value = if (key.isBlank()) {
+                "Clave borrada. Se usará voz básica."
+            } else {
+                "Clave guardada. Abrí un libro: voz con alma."
+            }
+        }
     }
 
     fun importEpub(uri: Uri) {
@@ -69,11 +89,13 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
     fun deleteBook(id: String) {
         viewModelScope.launch { store.deleteBook(id) }
     }
+
+    fun bookStore(): BookStore = store
 }
 
 class ReaderViewModel(app: Application) : AndroidViewModel(app) {
     private val store = BookStore(app)
-    private val voice = PersonaVoice(app)
+    private val voice = PersonaVoice(app) { store.getElevenLabsKey() }
     private val _state = MutableStateFlow(ReaderUiState())
     val state: StateFlow<ReaderUiState> = _state.asStateFlow()
     private var speakJob: Job? = null
@@ -93,8 +115,7 @@ class ReaderViewModel(app: Application) : AndroidViewModel(app) {
                         epub = epub,
                         chapterIndex = idx,
                         loading = false,
-                        error = "Necesitás internet para la voz de persona. " +
-                            (e.message ?: "Sin conexión."),
+                        error = e.message ?: "Necesitás internet para la voz.",
                     )
                     return@launch
                 }
@@ -137,21 +158,6 @@ class ReaderViewModel(app: Application) : AndroidViewModel(app) {
         val s = _state.value
         val epub = s.epub ?: return
         val chapter = epub.chapters.getOrNull(s.chapterIndex) ?: return
-        if (s.error != null && s.status == null) {
-            // Reintentar preparar voz
-            viewModelScope.launch {
-                try {
-                    val status = voice.prepare()
-                    _state.value = s.copy(status = status, error = null)
-                    play()
-                } catch (e: Exception) {
-                    _state.value = s.copy(
-                        error = "Necesitás internet para la voz de persona.",
-                    )
-                }
-            }
-            return
-        }
         speakJob?.cancel()
         voice.stop()
         _state.value = s.copy(isPlaying = true, error = null)
@@ -173,7 +179,7 @@ class ReaderViewModel(app: Application) : AndroidViewModel(app) {
             } catch (e: Exception) {
                 _state.value = _state.value.copy(
                     isPlaying = false,
-                    error = e.message ?: "Error de voz. Revisá internet.",
+                    error = e.message ?: "Error de voz",
                     status = voice.lastStatus,
                 )
             }

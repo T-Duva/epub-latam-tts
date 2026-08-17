@@ -23,11 +23,19 @@ data class BookMeta(
 
 class BookStore(private val context: Context) {
     private val booksKey = stringPreferencesKey("books_json")
+    private val elevenKey = stringPreferencesKey("elevenlabs_api_key")
     private val booksDir: File
         get() = File(context.filesDir, "books").also { it.mkdirs() }
 
     val books: Flow<List<BookMeta>> = context.dataStore.data.map { prefs ->
         parseBooks(prefs[booksKey].orEmpty())
+    }
+
+    suspend fun getElevenLabsKey(): String =
+        context.dataStore.data.first()[elevenKey].orEmpty()
+
+    suspend fun setElevenLabsKey(key: String) {
+        context.dataStore.edit { it[elevenKey] = key.trim() }
     }
 
     suspend fun listBooks(): List<BookMeta> = books.first()
