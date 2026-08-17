@@ -3,18 +3,14 @@ package com.epublatam.tts.tts
 import android.content.Context
 import android.media.AudioAttributes
 import android.media.MediaPlayer
-import android.speech.tts.TextToSpeech
-import android.speech.tts.UtteranceProgressListener
-import com.epublatam.tts.BuildConfig
+import android.util.Log
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
 import okhttp3.Headers
-import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
-import okhttp3.RequestBody.Companion.toRequestBody
 import okhttp3.Response
 import okhttp3.WebSocket
 import okhttp3.WebSocketListener
@@ -33,7 +29,7 @@ import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
 import kotlin.math.roundToInt
 
-enum class TtsEngineKind { AI_NEURAL, CLOUD, SYSTEM }
+enum class TtsEngineKind { PERSONA, SISTEMA }
 
 data class TtsStatus(
     val engine: TtsEngineKind,
@@ -41,205 +37,77 @@ data class TtsStatus(
     val message: String? = null,
 )
 
-interface LatamSpeaker {
-    suspend fun prepare(): TtsStatus
-    suspend fun speak(text: String, rate: Float, onDone: () -> Unit)
-    fun pause()
-    fun stop()
-    fun release()
-}
-
-class TtsRouter(private val context: Context) {
-    private val edge = EdgeLatamTts(context)
-    private val cloud = CloudLatamTts(context)
-    private val system = SystemLatamTts(context)
-    private var active: LatamSpeaker = edge
-    var lastStatus: TtsStatus? = null
-        private set
-
-    suspend fun preparePreferred(): TtsStatus {
-        // 1) Voz neural IA (Edge es-MX) — natural, respeta puntuación, sin API key
-        runCatching { edge.prepare() }.onSuccess {
-            active = edge
-            lastStatus = it
-            return it
-        }
-        // 2) Google Cloud si hay key
-        if (BuildConfig.GCS_TTS_API_KEY.isNotBlank()) {
-            runCatching { cloud.prepare() }.onSuccess {
-                active = cloud
-                lastStatus = it
-                return it
-            }
-        }
-        // 3) Sistema
-        active = system
-        val status = system.prepare()
-        lastStatus = status
-        return status
-    }
-
-    suspend fun speak(text: String, rate: Float, onDone: () -> Unit) {
-        val natural = NaturalText.prepareForSpeech(text)
-        try {
-            active.speak(natural, rate, onDone)
-        } catch (e: Exception) {
-            if (active !== system) {
-                // Intentar otro motor neural antes del sistema
-                if (active !== edge) {
-                    runCatching {
-                        active = edge
-                        lastStatus = edge.prepare()
-                        active.speak(natural, rate, onDone)
-                        return
-                    }
-                }
-                if (active !== cloud && BuildConfig.GCS_TTS_API_KEY.isNotBlank()) {
-                    runCatching {
-                        active = cloud
-                        lastStatus = cloud.prepare()
-                        active.speak(natural, rate, onDone)
-                        return
-                    }
-                }
-                active = system
-                lastStatus = system.prepare()
-                active.speak(natural, rate, onDone)
-            } else {
-                throw e
-            }
-        }
-    }
-
-    fun pause() = active.pause()
-    fun stop() = active.stop()
-    fun release() {
-        edge.release()
-        cloud.release()
-        system.release()
-    }
-}
-
-/** Prepara el texto para que la voz neural respete pausas naturales. */
-object NaturalText {
-    fun prepareForSpeech(raw: String): String {
-        var t = raw
-            .replace('\u00A0', ' ')
-            .replace(Regex("[\\t\\x0B\\f\\r]+"), " ")
-            .replace(Regex("\\n{3,}"), "\n\n")
-            .trim()
-
-        // Espacio después de puntuación si falta (evita "hola.Mundo")
-        t = t.replace(Regex("([.!?;:,])(?=\\S)"), "$1 ")
-        // No duplicar espacios
-        t = t.replace(Regex(" {2,}"), " ")
-        // Puntos suspensivos limpios
-        t = t.replace(Regex("\\.{4,}"), "...")
-        return t.trim()
-    }
-
-    /**
-     * Parte en frases respetando . ! ? ; y saltos de párrafo.
-     * Las comas quedan dentro de la frase (la voz neural hace la pausa corta).
-     */
-    fun splitPhrases(text: String, maxChars: Int = 420): List<String> {
-        val cleaned = prepareForSpeech(text)
-        if (cleaned.isEmpty()) return emptyList()
-
-        val sentences = cleaned
-            .split(Regex("(?<=[.!?…;])\\s+|\\n{2,}"))
-            .map { it.trim() }
-            .filter { it.isNotBlank() }
-
-        val out = mutableListOf<String>()
-        val buf = StringBuilder()
-        for (s in sentences) {
-            if (s.length > maxChars) {
-                if (buf.isNotEmpty()) {
-                    out += buf.toString().trim()
-                    buf.clear()
-                }
-                out += splitLongKeepingCommas(s, maxChars)
-                continue
-            }
-            if (buf.isNotEmpty() && buf.length + 1 + s.length > maxChars) {
-                out += buf.toString().trim()
-                buf.clear()
-            }
-            if (buf.isNotEmpty()) buf.append(' ')
-            buf.append(s)
-        }
-        if (buf.isNotEmpty()) out += buf.toString().trim()
-        return out
-    }
-
-    private fun splitLongKeepingCommas(text: String, maxChars: Int): List<String> {
-        val parts = mutableListOf<String>()
-        var remaining = text
-        while (remaining.length > maxChars) {
-            var cut = remaining.lastIndexOf(',', maxChars)
-            if (cut < maxChars / 3) cut = remaining.lastIndexOf(' ', maxChars)
-            if (cut < maxChars / 3) cut = maxChars
-            parts += remaining.substring(0, cut + 1).trim()
-            remaining = remaining.substring(cut + 1).trim()
-        }
-        if (remaining.isNotBlank()) parts += remaining
-        return parts
-    }
-}
-
 /**
- * Voz neural IA vía Microsoft Edge Read Aloud.
- * Español México: Dalia (muy natural). Respeta puntos y comas.
+ * Voz de persona (Microsoft Neural, español México).
+ * Sin fallback a la voz robótica del teléfono.
+ * Parte el texto en respiraciones (comas/puntos) con silencios reales.
  */
-class EdgeLatamTts(private val context: Context) : LatamSpeaker {
+class PersonaVoice(private val context: Context) {
     companion object {
+        private const val TAG = "PersonaVoice"
         private const val TRUSTED_TOKEN = "6A5AA1D4EAFF4E9FB37E23D68491D6F4"
         private const val CHROMIUM = "143.0.3650.75"
         private const val VOICE = "es-MX-DaliaNeural"
-        private const val WIN_EPOCH = 11644473600L
+        private const val WIN_EPOCH = 11_644_473_600L
     }
 
     private val client = OkHttpClient.Builder()
-        .connectTimeout(20, TimeUnit.SECONDS)
-        .readTimeout(90, TimeUnit.SECONDS)
-        .pingInterval(20, TimeUnit.SECONDS)
+        .connectTimeout(25, TimeUnit.SECONDS)
+        .readTimeout(120, TimeUnit.SECONDS)
+        .pingInterval(15, TimeUnit.SECONDS)
+        .retryOnConnectionFailure(true)
         .build()
 
     private var player: MediaPlayer? = null
     @Volatile private var cancelled = false
-    private val cacheDir = File(context.cacheDir, "edge_tts").also { it.mkdirs() }
+    private val cacheDir = File(context.cacheDir, "persona_voice").also { it.mkdirs() }
 
-    override suspend fun prepare(): TtsStatus =
-        TtsStatus(
-            engine = TtsEngineKind.AI_NEURAL,
-            voiceLabel = "Dalia (IA neural · México)",
-            message = "Voz humana neural — respeta puntuación",
+    var lastStatus: TtsStatus = TtsStatus(
+        engine = TtsEngineKind.PERSONA,
+        voiceLabel = "Dalia · México",
+        message = "Voz de persona (necesita internet)",
+    )
+        private set
+
+    suspend fun prepare(): TtsStatus {
+        // Prueba real: si esto falla, no fingimos que hay voz buena
+        synthesizePlain("Listo.", "-15%")
+        lastStatus = TtsStatus(
+            engine = TtsEngineKind.PERSONA,
+            voiceLabel = "Dalia · México",
+            message = "Voz de persona · con pausas naturales",
         )
+        return lastStatus
+    }
 
-    override suspend fun speak(text: String, rate: Float, onDone: () -> Unit) {
+    suspend fun speak(text: String, rate: Float, onDone: () -> Unit) {
         stop()
         cancelled = false
-        val phrases = NaturalText.splitPhrases(text)
-        val edgeRate = toEdgeRate(rate)
+        val breaths = BreathSplitter.split(text)
+        if (breaths.isEmpty()) {
+            withContext(Dispatchers.Main) { onDone() }
+            return
+        }
+        // Más lento = más humano
+        val edgeRate = toEdgeRate(rate * 0.88f)
         withContext(Dispatchers.IO) {
-            for ((index, phrase) in phrases.withIndex()) {
+            for ((index, breath) in breaths.withIndex()) {
                 if (cancelled) break
-                val audio = synthesize(phrase, edgeRate)
+                val audio = try {
+                    synthesizePlain(breath.text, edgeRate)
+                } catch (e: Exception) {
+                    Log.e(TAG, "Fallo síntesis: ${e.message}", e)
+                    // Un reintento con token nuevo
+                    delay(400)
+                    synthesizePlain(breath.text, edgeRate)
+                }
                 if (cancelled || audio.isEmpty()) continue
-                val file = File(cacheDir, "p_${UUID.randomUUID()}.mp3")
+                val file = File(cacheDir, "b_${UUID.randomUUID()}.mp3")
                 file.writeBytes(audio)
                 try {
                     playFile(file)
-                    // Pausa breve entre frases (naturalidad)
-                    if (!cancelled && index < phrases.lastIndex) {
-                        val pauseMs = when {
-                            phrase.endsWith('.') || phrase.endsWith('!') || phrase.endsWith('?') ||
-                                phrase.endsWith('…') -> 280L
-                            phrase.endsWith(';') -> 180L
-                            else -> 90L
-                        }
-                        delay(pauseMs)
+                    if (!cancelled && index < breaths.lastIndex) {
+                        delay(breath.pauseAfterMs)
                     }
                 } finally {
                     file.delete()
@@ -251,24 +119,42 @@ class EdgeLatamTts(private val context: Context) : LatamSpeaker {
         }
     }
 
+    fun stop() {
+        cancelled = true
+        player?.runCatching {
+            stop()
+            release()
+        }
+        player = null
+    }
+
+    fun pause() {
+        player?.takeIf { it.isPlaying }?.pause()
+    }
+
+    fun release() = stop()
+
     private fun toEdgeRate(userRate: Float): String {
-        val pct = ((userRate.coerceIn(0.6f, 1.8f) - 1f) * 100f).roundToInt()
+        val pct = ((userRate.coerceIn(0.55f, 1.5f) - 1f) * 100f).roundToInt()
         return if (pct >= 0) "+$pct%" else "$pct%"
     }
 
     private fun generateSecMsGec(): String {
         var ticks = System.currentTimeMillis() / 1000.0 + WIN_EPOCH
-        ticks -= ticks % 300
-        val windowsTicks = (ticks * 10_000_000.0).toLong()
-        val toHash = "$windowsTicks$TRUSTED_TOKEN"
-        val digest = MessageDigest.getInstance("SHA-256").digest(toHash.toByteArray(Charsets.US_ASCII))
+        ticks -= ticks % 300.0
+        ticks *= 10_000_000.0
+        val str = "${ticks.toLong()}$TRUSTED_TOKEN"
+        val digest = MessageDigest.getInstance("SHA-256").digest(str.toByteArray(Charsets.US_ASCII))
         return digest.joinToString("") { "%02X".format(it) }
     }
 
     private fun connectId(): String = UUID.randomUUID().toString().replace("-", "")
 
     private fun dateString(): String {
-        val fmt = SimpleDateFormat("EEE MMM dd yyyy HH:mm:ss 'GMT+0000 (Coordinated Universal Time)'", Locale.US)
+        val fmt = SimpleDateFormat(
+            "EEE MMM dd yyyy HH:mm:ss 'GMT+0000 (Coordinated Universal Time)'",
+            Locale.US,
+        )
         fmt.timeZone = TimeZone.getTimeZone("UTC")
         return fmt.format(Date())
     }
@@ -277,63 +163,21 @@ class EdgeLatamTts(private val context: Context) : LatamSpeaker {
         s.replace("&", "&amp;")
             .replace("<", "&lt;")
             .replace(">", "&gt;")
-            .replace("\"", "&quot;")
-            .replace("'", "&apos;")
 
+    /** SSML idéntico al de edge-tts (Python). Sin tags break (Microsoft los ignora/rechaza). */
     private fun buildSsml(text: String, rate: String): String {
-        // Breaks explícitos: coma corta, punto más largo
-        val ssmlBody = buildString {
-            val tokens = Regex("([^,.!?;:…]+[,.!?;:…]?)").findAll(text).map { it.value }.toList()
-            if (tokens.isEmpty()) {
-                append(xmlEscape(text))
-            } else {
-                tokens.forEachIndexed { i, tok ->
-                    append(xmlEscape(tok.trim()))
-                    val trim = tok.trimEnd()
-                    val pause = when {
-                        trim.endsWith('.') || trim.endsWith('!') || trim.endsWith('?') || trim.endsWith('…') -> "400ms"
-                        trim.endsWith(';') -> "250ms"
-                        trim.endsWith(':') -> "220ms"
-                        trim.endsWith(',') -> "160ms"
-                        else -> null
-                    }
-                    if (pause != null && i < tokens.lastIndex) {
-                        append("<break time=\"$pause\"/>")
-                    }
-                    if (i < tokens.lastIndex) append(' ')
-                }
-            }
-        }
-
-        return """
-            <speak version="1.0" xmlns="http://www.w3.org/2001/10/synthesis" xml:lang="es-MX">
-              <voice name="$VOICE">
-                <prosody rate="$rate" pitch="+0Hz" volume="+0%">
-                  $ssmlBody
-                </prosody>
-              </voice>
-            </speak>
-        """.trimIndent().replace(Regex(">\\s+<"), "><")
-    }
-
-    private fun buildSsmlPlain(text: String, rate: String): String {
         val escaped = xmlEscape(text)
-        return """
-            <speak version="1.0" xmlns="http://www.w3.org/2001/10/synthesis" xml:lang="es-MX">
-              <voice name="$VOICE">
-                <prosody rate="$rate" pitch="+0Hz" volume="+0%">$escaped</prosody>
-              </voice>
-            </speak>
-        """.trimIndent().replace(Regex(">\\s+<"), "><")
+        return "<speak version='1.0' xmlns='http://www.w3.org/2001/10/synthesis' xml:lang='en-US'>" +
+            "<voice name='$VOICE'>" +
+            "<prosody pitch='+0Hz' rate='$rate' volume='+0%'>" +
+            escaped +
+            "</prosody></voice></speak>"
     }
 
-    private suspend fun synthesize(text: String, rate: String): ByteArray {
-        return try {
-            synthesizeSsml(buildSsml(text, rate))
-        } catch (_: Exception) {
-            // Algunos endpoints rechazan <break>; la voz neural igual respeta puntuación
-            synthesizeSsml(buildSsmlPlain(text, rate))
-        }
+    private suspend fun synthesizePlain(text: String, rate: String): ByteArray {
+        val clean = text.trim()
+        if (clean.isEmpty()) return ByteArray(0)
+        return synthesizeSsml(buildSsml(clean, rate))
     }
 
     private suspend fun synthesizeSsml(ssml: String): ByteArray =
@@ -354,86 +198,166 @@ class EdgeLatamTts(private val context: Context) : LatamSpeaker {
                 .add(
                     "User-Agent",
                     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 " +
-                        "(KHTML, like Gecko) Chrome/$major.0.0.0 Safari/537.36 Edg/$major.0.0.0",
+                        "(KHTML, like Gecko) Chrome/$major.0.0.0 Safari/537.36 " +
+                        "Edg/$major.0.0.0",
                 )
+                .add("Accept-Encoding", "gzip, deflate, br")
                 .add("Accept-Language", "es-MX,es;q=0.9,en;q=0.8")
-                .add("Cookie", "muid=${UUID.randomUUID().toString().replace("-", "").uppercase()};")
+                .add("Cookie", "muid=${connectId().uppercase()};")
                 .build()
 
             val request = Request.Builder().url(url).headers(headers).build()
             val audio = ByteArrayOutputStream()
             val finished = AtomicBoolean(false)
 
-            val ws = client.newWebSocket(request, object : WebSocketListener() {
-                override fun onOpen(webSocket: WebSocket, response: Response) {
-                    val config =
-                        "X-Timestamp:${dateString()}\r\n" +
-                            "Content-Type:application/json; charset=utf-8\r\n" +
-                            "Path:speech.config\r\n\r\n" +
-                            """{"context":{"synthesis":{"audio":{"metadataoptions":{"sentenceBoundaryEnabled":"true","wordBoundaryEnabled":"false"},"outputFormat":"audio-24khz-48kbitrate-mono-mp3"}}}}"""
-                    webSocket.send(config)
-
-                    val ssmlMsg =
-                        "X-RequestId:$reqId\r\n" +
-                            "Content-Type:application/ssml+xml\r\n" +
-                            "X-Timestamp:${dateString()}Z\r\n" +
-                            "Path:ssml\r\n\r\n" +
-                            ssml
-                    webSocket.send(ssmlMsg)
+            fun completeOk() {
+                if (finished.compareAndSet(false, true) && cont.isActive) {
+                    val bytes = audio.toByteArray()
+                    if (bytes.isEmpty()) {
+                        cont.resumeWithException(
+                            IllegalStateException("No llegó audio. Revisá internet."),
+                        )
+                    } else {
+                        cont.resume(bytes)
+                    }
                 }
+            }
 
-                override fun onMessage(webSocket: WebSocket, text: String) {
-                    if (text.contains("Path:turn.end")) {
-                        webSocket.close(1000, null)
-                        if (finished.compareAndSet(false, true) && cont.isActive) {
-                            val bytes = audio.toByteArray()
-                            if (bytes.isEmpty()) {
-                                cont.resumeWithException(IllegalStateException("Sin audio de la voz neural"))
-                            } else {
-                                cont.resume(bytes)
+            fun completeErr(t: Throwable) {
+                if (finished.compareAndSet(false, true) && cont.isActive) {
+                    cont.resumeWithException(t)
+                }
+            }
+
+            val ws = client.newWebSocket(
+                request,
+                object : WebSocketListener() {
+                    override fun onOpen(webSocket: WebSocket, response: Response) {
+                        val config =
+                            "X-Timestamp:${dateString()}\r\n" +
+                                "Content-Type:application/json; charset=utf-8\r\n" +
+                                "Path:speech.config\r\n\r\n" +
+                                """{"context":{"synthesis":{"audio":{"metadataoptions":{"sentenceBoundaryEnabled":"true","wordBoundaryEnabled":"false"},"outputFormat":"audio-24khz-48kbitrate-mono-mp3"}}}}"""
+                        webSocket.send(config)
+
+                        val ssmlMsg =
+                            "X-RequestId:$reqId\r\n" +
+                                "Content-Type:application/ssml+xml\r\n" +
+                                "X-Timestamp:${dateString()}Z\r\n" +
+                                "Path:ssml\r\n\r\n" +
+                                ssml
+                        webSocket.send(ssmlMsg)
+                    }
+
+                    override fun onMessage(webSocket: WebSocket, text: String) {
+                        when {
+                            text.contains("Path:turn.end") -> {
+                                webSocket.close(1000, null)
+                                completeOk()
                             }
+                            text.contains("Path:response") || text.contains("Path:turn.start") ||
+                                text.contains("Path:audio.metadata") -> Unit
+                            else -> Log.d(TAG, "msg: ${text.take(120)}")
                         }
                     }
-                }
 
-                override fun onMessage(webSocket: WebSocket, bytes: ByteString) {
-                    val data = bytes.toByteArray()
-                    if (data.size < 2) return
-                    val headerLen = ((data[0].toInt() and 0xff) shl 8) or (data[1].toInt() and 0xff)
-                    if (headerLen + 2 > data.size) return
-                    val header = String(data, 2, headerLen, Charsets.UTF_8)
-                    if (!header.contains("Path:audio")) return
-                    val payload = data.copyOfRange(2 + headerLen, data.size)
-                    if (payload.isNotEmpty()) audio.write(payload)
-                }
+                    override fun onMessage(webSocket: WebSocket, bytes: ByteString) {
+                        val data = bytes.toByteArray()
+                        if (data.size < 2) return
+                        val headerLen = ((data[0].toInt() and 0xff) shl 8) or (data[1].toInt() and 0xff)
+                        if (headerLen + 2 > data.size) return
+                        val header = String(data, 2, headerLen, Charsets.UTF_8)
+                        if (!header.contains("Path:audio")) return
+                        val payloadStart = 2 + headerLen
+                        // Algunos mensajes traen \r\n extra tras el header; edge-tts usa headerLen+2
+                        // desde el inicio del buffer de headers (después de los 2 bytes de longitud).
+                        // get_headers_and_data: data[header_length + 2 :] relativo al buffer SIN los 2 bytes?
+                        // En Python: parameters, data = get_headers_and_data(received.data, header_length)
+                        // donde received.data INCLUYE los 2 bytes, y header_length es solo del header text.
+                        // get_headers_and_data(data, header_length): headers from data[:header_length], 
+                        // body from data[header_length + 2:]
+                        // Wait - they pass received.data which is FULL binary including first 2 bytes!
+                        // Looking again:
+                        // header_length = int.from_bytes(received.data[:2], "big")
+                        // parameters, data = get_headers_and_data(received.data, header_length)
+                        // 
+                        // get_headers_and_data(data, header_length):
+                        //   for line in data[:header_length].split...
+                        //   return headers, data[header_length + 2:]
+                        //
+                        // That would parse data[:header_length] starting from byte 0 which is the length bytes!
+                        // So they're passing wrong? Let me look again...
+                        //
+                        // Actually: get_headers_and_data(received.data, header_length) 
+                        // uses data[:header_length] for headers - that includes the 2 length bytes at start
+                        // unless header_length counts from start...
+                        // 
+                        // From communicate.py:
+                        // header_length = int.from_bytes(received.data[:2], "big")
+                        // parameters, data = get_headers_and_data(received.data, header_length)
+                        //
+                        // And get_headers_and_data:
+                        // headers from data[:header_length] 
+                        // body = data[header_length + 2:]
+                        //
+                        // This seems like a bug unless... they meant get_headers_and_data(received.data[2:], header_length)?
+                        // Looking at many Kotlin ports - they use:
+                        // val header = String(data, 2, headerLen)
+                        // val audioData = data.copyOfRange(2 + headerLen, data.size)
+                        //
+                        // Some use 2 + headerLen + 2 for the \r\n\r\n
+                        // Python: data[header_length + 2:] on FULL message means skip first header_length bytes
+                        // THEN skip 2 more. If header_length is only the header text length, and first 2 bytes
+                        // are length prefix, the Python code would be wrong unless header_length includes something else.
+                        //
+                        // From edge-tts issues and working Android ports (capacitor-edge-tts):
+                        // typically: offset = 2 + headerLength; if there's \r\n\r\n after headers it's included in headerLength
+                        //
+                        // I'll use: find \r\n\r\n after the 2-byte length
 
-                override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
-                    if (finished.compareAndSet(false, true) && cont.isActive) {
-                        cont.resumeWithException(t)
-                    }
-                }
-
-                override fun onClosing(webSocket: WebSocket, code: Int, reason: String) {
-                    webSocket.close(1000, null)
-                }
-
-                override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
-                    if (finished.compareAndSet(false, true) && cont.isActive) {
-                        val bytes = audio.toByteArray()
-                        if (bytes.isEmpty()) {
-                            cont.resumeWithException(IllegalStateException("Conexión cerrada sin audio"))
+                        val sep = indexOfCrLfCrLf(data, 2)
+                        val payload = if (sep >= 0) {
+                            data.copyOfRange(sep + 4, data.size)
                         } else {
-                            cont.resume(bytes)
+                            data.copyOfRange(2 + headerLen, data.size)
                         }
+                        if (payload.isNotEmpty()) audio.write(payload)
                     }
-                }
-            })
+
+                    override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
+                        Log.e(TAG, "ws fail: ${response?.code} ${t.message}")
+                        completeErr(
+                            IllegalStateException(
+                                "No se pudo usar la voz de persona. Activá internet e intentá de nuevo.",
+                                t,
+                            ),
+                        )
+                    }
+
+                    override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
+                        completeOk()
+                    }
+                },
+            )
 
             cont.invokeOnCancellation {
                 cancelled = true
                 ws.cancel()
             }
         }
+
+    private fun indexOfCrLfCrLf(data: ByteArray, from: Int): Int {
+        var i = from
+        while (i + 3 < data.size) {
+            if (data[i] == '\r'.code.toByte() && data[i + 1] == '\n'.code.toByte() &&
+                data[i + 2] == '\r'.code.toByte() && data[i + 3] == '\n'.code.toByte()
+            ) {
+                return i
+            }
+            i++
+        }
+        return -1
+    }
 
     private suspend fun playFile(file: File) = suspendCancellableCoroutine { cont ->
         if (cancelled) {
@@ -471,276 +395,57 @@ class EdgeLatamTts(private val context: Context) : LatamSpeaker {
             player = null
         }
     }
-
-    override fun pause() {
-        player?.takeIf { it.isPlaying }?.pause()
-    }
-
-    override fun stop() {
-        cancelled = true
-        player?.runCatching {
-            stop()
-            release()
-        }
-        player = null
-    }
-
-    override fun release() = stop()
 }
 
-class CloudLatamTts(private val context: Context) : LatamSpeaker {
-    private val client = OkHttpClient.Builder()
-        .connectTimeout(30, TimeUnit.SECONDS)
-        .readTimeout(60, TimeUnit.SECONDS)
-        .build()
+data class BreathUnit(val text: String, val pauseAfterMs: Long)
 
-    private var player: MediaPlayer? = null
-    private val cacheDir = File(context.cacheDir, "tts_audio").also { it.mkdirs() }
-    private val languageCode = "es-US"
-    private val voiceName = "es-US-Neural2-B"
+/** Parte el texto como respira una persona: coma = pausa corta, punto = pausa larga. */
+object BreathSplitter {
+    fun split(raw: String): List<BreathUnit> {
+        var t = raw
+            .replace('\u00A0', ' ')
+            .replace(Regex("[\\t\\x0B\\f\\r]+"), " ")
+            .replace(Regex("\\n{2,}"), ". ")
+            .replace(Regex("\\n"), " ")
+            .replace(Regex("([.!?;:,])(?=\\S)"), "$1 ")
+            .replace(Regex(" {2,}"), " ")
+            .trim()
+        if (t.isEmpty()) return emptyList()
 
-    override suspend fun prepare(): TtsStatus {
-        val key = BuildConfig.GCS_TTS_API_KEY
-        if (key.isBlank()) error("Sin API key")
-        return TtsStatus(
-            engine = TtsEngineKind.CLOUD,
-            voiceLabel = "$voiceName",
-            message = "Google Neural (latam)",
-        )
-    }
+        // Cada trozo termina en puntuación o es un fragmento corto
+        val tokens = Regex("([^,.!?;:…]+[,.!?;:…]?)").findAll(t)
+            .map { it.value.trim() }
+            .filter { it.isNotBlank() }
+            .toList()
 
-    override suspend fun speak(text: String, rate: Float, onDone: () -> Unit) {
-        stop()
-        val chunks = NaturalText.splitPhrases(text, maxChars = 700)
-        withContext(Dispatchers.IO) {
-            for ((index, chunk) in chunks.withIndex()) {
-                val audio = synthesize(chunk, rate)
-                val file = File(cacheDir, "chunk_${UUID.randomUUID()}.mp3")
-                file.writeBytes(audio)
-                playFile(file)
-                file.delete()
-                if (index < chunks.lastIndex) delay(200)
+        val units = mutableListOf<BreathUnit>()
+        val buf = StringBuilder()
+
+        fun flush(pause: Long) {
+            val piece = buf.toString().trim()
+            if (piece.isNotEmpty()) {
+                units += BreathUnit(piece, pause)
             }
-            withContext(Dispatchers.Main) { onDone() }
+            buf.clear()
         }
-    }
 
-    private fun synthesize(text: String, rate: Float): ByteArray {
-        val key = BuildConfig.GCS_TTS_API_KEY
-        // SSML con pausas
-        val ssml = buildString {
-            append("<speak>")
-            val parts = Regex("([^,.!?;:…]+[,.!?;:…]?)").findAll(text).map { it.value.trim() }.filter { it.isNotEmpty() }
-            parts.forEachIndexed { i, tok ->
-                append(xmlEscape(tok))
-                val pause = when {
-                    tok.endsWith('.') || tok.endsWith('!') || tok.endsWith('?') -> "400ms"
-                    tok.endsWith(',') -> "160ms"
-                    tok.endsWith(';') || tok.endsWith(':') -> "250ms"
-                    else -> null
-                }
-                if (pause != null) append("<break time=\"$pause\"/>")
-                if (i >= 0) append(' ')
+        for (tok in tokens) {
+            if (buf.isNotEmpty()) buf.append(' ')
+            buf.append(tok)
+            val end = tok.trimEnd().lastOrNull()
+            val pause = when (end) {
+                '.', '!', '?', '…' -> 550L
+                ';' -> 380L
+                ':' -> 320L
+                ',' -> 280L
+                else -> 0L
             }
-            append("</speak>")
-        }
-        val bodyJson = org.json.JSONObject()
-            .put("input", org.json.JSONObject().put("ssml", ssml))
-            .put(
-                "voice",
-                org.json.JSONObject()
-                    .put("languageCode", languageCode)
-                    .put("name", voiceName),
-            )
-            .put(
-                "audioConfig",
-                org.json.JSONObject()
-                    .put("audioEncoding", "MP3")
-                    .put("speakingRate", rate.toDouble().coerceIn(0.5, 2.0)),
-            )
-
-        val request = Request.Builder()
-            .url("https://texttospeech.googleapis.com/v1/text:synthesize?key=$key")
-            .post(
-                bodyJson.toString().toRequestBody(
-                    "application/json; charset=utf-8".toMediaType(),
-                ),
-            )
-            .build()
-
-        client.newCall(request).execute().use { response ->
-            val raw = response.body?.string().orEmpty()
-            if (!response.isSuccessful) error("Google TTS ${response.code}: $raw")
-            val audioB64 = org.json.JSONObject(raw).getString("audioContent")
-            return android.util.Base64.decode(audioB64, android.util.Base64.DEFAULT)
-        }
-    }
-
-    private fun xmlEscape(s: String): String =
-        s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
-
-    private suspend fun playFile(file: File) = suspendCancellableCoroutine { cont ->
-        val mp = MediaPlayer().apply {
-            setAudioAttributes(
-                AudioAttributes.Builder()
-                    .setUsage(AudioAttributes.USAGE_MEDIA)
-                    .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
-                    .build(),
-            )
-            setDataSource(file.absolutePath)
-            setOnCompletionListener {
-                it.release()
-                if (player === it) player = null
-                if (cont.isActive) cont.resume(Unit)
-            }
-            setOnErrorListener { p, _, _ ->
-                p.release()
-                if (player === p) player = null
-                if (cont.isActive) cont.resume(Unit)
-                true
-            }
-            prepare()
-            start()
-        }
-        player = mp
-        cont.invokeOnCancellation {
-            mp.stop()
-            mp.release()
-            player = null
-        }
-    }
-
-    override fun pause() {
-        player?.takeIf { it.isPlaying }?.pause()
-    }
-
-    override fun stop() {
-        player?.runCatching {
-            stop()
-            release()
-        }
-        player = null
-    }
-
-    override fun release() = stop()
-}
-
-class SystemLatamTts(private val context: Context) : LatamSpeaker {
-    private var tts: TextToSpeech? = null
-    private var ready = false
-    private var onDoneCallback: (() -> Unit)? = null
-    private var pendingUtterances = 0
-
-    override suspend fun prepare(): TtsStatus = suspendCancellableCoroutine { cont ->
-        val engine = TextToSpeech(context) { status ->
-            if (status != TextToSpeech.SUCCESS) {
-                if (cont.isActive) {
-                    cont.resume(
-                        TtsStatus(TtsEngineKind.SYSTEM, "ninguna", "No se pudo iniciar TTS del sistema"),
-                    )
-                }
-                return@TextToSpeech
-            }
-            ready = true
-            if (cont.isActive) cont.resume(pickLatamVoice(tts!!))
-        }
-        tts = engine
-        engine.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
-            override fun onStart(utteranceId: String?) = Unit
-            override fun onDone(utteranceId: String?) {
-                pendingUtterances--
-                if (pendingUtterances <= 0) {
-                    onDoneCallback?.invoke()
-                    onDoneCallback = null
-                }
-            }
-
-            @Deprecated("Deprecated in Java")
-            override fun onError(utteranceId: String?) {
-                pendingUtterances--
-                if (pendingUtterances <= 0) {
-                    onDoneCallback?.invoke()
-                    onDoneCallback = null
-                }
-            }
-        })
-    }
-
-    private fun pickLatamVoice(engine: TextToSpeech): TtsStatus {
-        val mx = Locale("es", "MX")
-        if (engine.setLanguage(mx) >= TextToSpeech.LANG_AVAILABLE) {
-            rejectSpain(engine)
-            return TtsStatus(TtsEngineKind.SYSTEM, "es-MX", "Respaldo del sistema (México)")
-        }
-        val us = Locale("es", "US")
-        if (engine.setLanguage(us) >= TextToSpeech.LANG_AVAILABLE) {
-            rejectSpain(engine)
-            return TtsStatus(TtsEngineKind.SYSTEM, "es-US", "Respaldo del sistema (latam)")
-        }
-        val latam = engine.voices?.firstOrNull {
-            it.locale.language == "es" && !it.locale.country.equals("ES", true)
-        }
-        if (latam != null) {
-            engine.voice = latam
-            return TtsStatus(TtsEngineKind.SYSTEM, latam.name, "Respaldo del sistema")
-        }
-        return TtsStatus(
-            TtsEngineKind.SYSTEM,
-            "faltante",
-            "Instalá Español (México) en Ajustes → Texto a voz",
-        )
-    }
-
-    private fun rejectSpain(engine: TextToSpeech) {
-        val voice = engine.voice
-        if (voice != null && voice.locale.country.equals("ES", ignoreCase = true)) {
-            engine.voices?.firstOrNull {
-                it.locale.language == "es" && !it.locale.country.equals("ES", true)
-            }?.let { engine.voice = it }
-        }
-    }
-
-    override suspend fun speak(text: String, rate: Float, onDone: () -> Unit) {
-        val engine = tts ?: error("TTS no iniciado")
-        if (!ready) error("TTS no listo")
-        val status = pickLatamVoice(engine)
-        if (status.voiceLabel == "faltante") error(status.message ?: "Sin voz latam")
-        // Un poco más lento = más natural
-        engine.setSpeechRate((rate * 0.92f).coerceIn(0.5f, 1.6f))
-        onDoneCallback = onDone
-        val phrases = NaturalText.splitPhrases(text, maxChars = 800)
-        pendingUtterances = phrases.size
-        phrases.forEachIndexed { index, phrase ->
-            val mode = if (index == 0) TextToSpeech.QUEUE_FLUSH else TextToSpeech.QUEUE_ADD
-            // Silencio entre frases vía QUEUE + utterance
-            engine.speak(phrase, mode, null, "p-$index")
-            if (index < phrases.lastIndex) {
-                val silence = when {
-                    phrase.endsWith('.') || phrase.endsWith('!') || phrase.endsWith('?') -> 400L
-                    phrase.endsWith(',') -> 180L
-                    else -> 120L
-                }
-                engine.playSilentUtterance(silence, TextToSpeech.QUEUE_ADD, "s-$index")
-                pendingUtterances++
+            // Respirar siempre en puntuación, o si el buffer ya es largo
+            if (pause > 0 || buf.length >= 90) {
+                flush(if (pause > 0) pause else 220L)
             }
         }
-        if (phrases.isEmpty()) onDone()
-    }
-
-    override fun pause() {
-        tts?.stop()
-    }
-
-    override fun stop() {
-        tts?.stop()
-        onDoneCallback = null
-        pendingUtterances = 0
-    }
-
-    override fun release() {
-        stop()
-        tts?.shutdown()
-        tts = null
-        ready = false
+        flush(0L)
+        return units
     }
 }

@@ -55,7 +55,7 @@ fun LibraryScreen(
     onDismissMessage: () -> Unit,
 ) {
     Scaffold(
-        topBar = { TopAppBar(title = { Text("EPUB Latam TTS") }) },
+        topBar = { TopAppBar(title = { Text("EPUB voz persona") }) },
         floatingActionButton = {
             FloatingActionButton(onClick = onAdd) {
                 Icon(Icons.Default.Add, contentDescription = "Añadir EPUB")
@@ -69,8 +69,8 @@ fun LibraryScreen(
                 .padding(16.dp),
         ) {
             Text(
-                "Importá un EPUB y escuchalo con voz neural IA (español México). " +
-                    "Respeta puntos y comas. Necesita internet.",
+                "Importá un EPUB y escuchalo con voz de persona (español México). " +
+                    "Hace pausas en comas y puntos. Necesita internet.",
                 style = MaterialTheme.typography.bodyMedium,
             )
             Spacer(Modifier.height(12.dp))
@@ -175,7 +175,7 @@ fun ReaderScreen(
         ) {
             state.status?.let {
                 Text(
-                    "Voz: ${it.voiceLabel}${it.message?.let { m -> " — $m" } ?: ""}",
+                    "Voz: ${it.voiceLabel}" + (it.message?.let { m -> " — $m" } ?: ""),
                     style = MaterialTheme.typography.bodySmall,
                 )
             }
