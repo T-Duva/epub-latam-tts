@@ -61,7 +61,7 @@ class PersonaVoice(private val context: Context) {
             onProgress("Preparando voz argentina…")
             edge.prepare("es-AR-TomasNeural", "Tomas · Argentina", serio = true)
             usePiper = false
-            lastStatus = edge.status.copy(message = "Argentino · ritmo de narrador (~140 pal/min)")
+            lastStatus = edge.status.copy(message = "Argentino · grave, para en el punto")
             lastStatus
         } catch (e: Exception) {
             Log.w("PersonaVoice", "Edge no disponible, Piper: ${e.message}")
@@ -104,75 +104,100 @@ class PersonaVoice(private val context: Context) {
     }
 }
 
-/** Texto para narración seria: menos “pregunta” al final, tipografía limpia. */
+/** Texto para narración seria: cadencia de afirmación, no de pregunta. */
 object MysteryText {
     fun prepare(raw: String): String {
         var t = raw
             .replace('\u00A0', ' ')
             .replace(Regex("[\\t\\x0B\\f\\r]+"), " ")
             .replace(Regex("\\n{3,}"), "\n\n")
-            .replace('…', '.')
             .replace('–', ',')
             .replace('—', ',')
-            .replace(Regex("([.!?;:,])(?=\\S)"), "$1 ")
+            .replace(Regex("([.!?;:,…])(?=\\S)"), "$1 ")
             .replace(Regex(" {2,}"), " ")
             .trim()
-        // Evita entonación interrogativa falsa en títulos/frases mal puntuadas
-        if (t.count { it == '?' } == 1 && t.length > 80 && !t.trimStart().startsWith("¿")) {
-            t = t.replace('?', '.')
+        t = dropFakeQuestions(t)
+        val lines = t.split('\n').map { line ->
+            val s = line.trimEnd()
+            if (s.isEmpty()) s
+            else if (s.last() in ".!?…,;:") s
+            else "$s."
         }
-        return t
+        return lines.joinToString("\n")
+    }
+
+    /** El ? sin ¿ hace que Tomas/Elena “canten” la frase como pregunta. */
+    private fun dropFakeQuestions(s: String): String {
+        val out = StringBuilder(s.length)
+        var open = false
+        for (c in s) {
+            when (c) {
+                '¿' -> {
+                    open = true
+                    out.append(c)
+                }
+                '?' -> {
+                    if (open) {
+                        out.append(c)
+                        open = false
+                    } else {
+                        out.append('.')
+                    }
+                }
+                '.', '!', '\n' -> {
+                    open = false
+                    out.append(c)
+                }
+                else -> out.append(c)
+            }
+        }
+        return out.toString()
     }
 }
 
 object StoryChunks {
-    fun split(raw: String, maxChars: Int = 700): List<String> {
-        var t = raw
-            .replace('\u00A0', ' ')
-            .replace(Regex("[\\t\\x0B\\f\\r]+"), " ")
-            .replace(Regex("\\n{3,}"), "\n\n")
-            .replace(Regex("([.!?;:,])(?=\\S)"), "$1 ")
-            .replace(Regex(" {2,}"), " ")
-            .trim()
+    fun splitUtterances(raw: String): List<Utterance> {
+        val t = raw.trim()
         if (t.isEmpty()) return emptyList()
-
+        val out = mutableListOf<Utterance>()
         val paragraphs = t.split(Regex("\\n{2,}")).map { it.trim() }.filter { it.isNotEmpty() }
-        val out = mutableListOf<String>()
         for (p in paragraphs) {
-            if (p.length <= maxChars) out += p
-            else out += splitSentences(p, maxChars)
+            val sentences = splitSentences(p.replace('\n', ' '), maxChars = 320)
+            for ((i, s) in sentences.withIndex()) {
+                val last = i == sentences.lastIndex
+                out += Utterance(s, HumanPacing.pauseAfter(s, endOfParagraph = last))
+            }
+        }
+        if (out.isNotEmpty()) {
+            val last = out.removeAt(out.lastIndex)
+            out += last.copy(pauseAfterMs = 0L)
         }
         return out
     }
 
+    fun split(raw: String, maxChars: Int = 700): List<String> =
+        splitUtterances(raw).map { it.text }.ifEmpty {
+            splitSentences(raw, maxChars)
+        }
+
     private fun splitSentences(text: String, maxChars: Int): List<String> {
         val sentences = text.split(Regex("(?<=[.!?…])\\s+")).map { it.trim() }.filter { it.isNotEmpty() }
         val out = mutableListOf<String>()
-        val buf = StringBuilder()
         for (s in sentences) {
-            if (s.length > maxChars) {
-                if (buf.isNotEmpty()) {
-                    out += buf.toString().trim()
-                    buf.clear()
-                }
-                var rest = s
-                while (rest.length > maxChars) {
-                    var cut = rest.lastIndexOf(' ', maxChars)
-                    if (cut < maxChars / 2) cut = maxChars
-                    out += rest.substring(0, cut).trim()
-                    rest = rest.substring(cut).trim()
-                }
-                if (rest.isNotEmpty()) out += rest
+            if (s.length <= maxChars) {
+                out += s
                 continue
             }
-            if (buf.isNotEmpty() && buf.length + 1 + s.length > maxChars) {
-                out += buf.toString().trim()
-                buf.clear()
+            var rest = s
+            while (rest.length > maxChars) {
+                var cut = rest.lastIndexOf(',', maxChars)
+                if (cut < maxChars / 3) cut = rest.lastIndexOf(' ', maxChars)
+                if (cut < maxChars / 3) cut = maxChars
+                out += rest.substring(0, cut).trim()
+                rest = rest.substring(cut).trim().trimStart(',', ' ')
             }
-            if (buf.isNotEmpty()) buf.append(' ')
-            buf.append(s)
+            if (rest.isNotEmpty()) out += rest
         }
-        if (buf.isNotEmpty()) out += buf.toString().trim()
         return out
     }
 }
@@ -523,7 +548,7 @@ class EdgeNarrator(private val context: Context) {
     ) {
         val my = session.incrementAndGet()
         player.stop()
-        val chunks = StoryChunks.split(text, maxChars = 700)
+        val chunks = StoryChunks.splitUtterances(text)
         if (chunks.isEmpty()) {
             withContext(Dispatchers.Main) { onDone() }
             return
@@ -532,21 +557,21 @@ class EdgeNarrator(private val context: Context) {
         withContext(Dispatchers.IO) {
             coroutineScope {
                 var nextJob = if (chunks.size > 1) {
-                    async { runCatching { synthesizePlain(chunks[1], edgeRate) }.getOrNull() }
+                    async { runCatching { synthesizePlain(chunks[1].text, edgeRate) }.getOrNull() }
                 } else {
                     null
                 }
-                for ((index, chunk) in chunks.withIndex()) {
+                for ((index, utt) in chunks.withIndex()) {
                     if (session.get() != my) return@coroutineScope
                     withContext(Dispatchers.Main) {
                         onProgress("Leyendo ${index + 1}/${chunks.size}…")
                     }
-                    val audio = if (index == 0) synthesizePlain(chunk, edgeRate)
-                    else nextJob?.await() ?: synthesizePlain(chunk, edgeRate)
+                    val audio = if (index == 0) synthesizePlain(utt.text, edgeRate)
+                    else nextJob?.await() ?: synthesizePlain(utt.text, edgeRate)
                     if (session.get() != my) return@coroutineScope
 
                     nextJob = if (index + 2 < chunks.size) {
-                        async { runCatching { synthesizePlain(chunks[index + 2], edgeRate) }.getOrNull() }
+                        async { runCatching { synthesizePlain(chunks[index + 2].text, edgeRate) }.getOrNull() }
                     } else {
                         null
                     }
@@ -556,7 +581,7 @@ class EdgeNarrator(private val context: Context) {
                     try {
                         player.playFile(file) { session.get() == my }
                         if (session.get() == my && index < chunks.lastIndex) {
-                            delay(40)
+                            delay(utt.pauseAfterMs)
                         }
                     } finally {
                         file.delete()
@@ -597,10 +622,10 @@ class EdgeNarrator(private val context: Context) {
 
     private fun buildSsml(text: String, rate: String): String {
         val body = EdgeSsmlText.body(text)
-        val pitch = if (serio) "-4Hz" else "+0Hz"
         return "<speak version='1.0' xmlns='http://www.w3.org/2001/10/synthesis' xml:lang='es-AR'>" +
             "<voice name='$voiceName'>" +
-            "<prosody pitch='$pitch' rate='$rate' volume='+0%'>" +
+            "<prosody pitch='${HumanPacing.EDGE_PITCH}' rate='$rate' " +
+            "contour='${HumanPacing.EDGE_CONTOUR}' volume='+0%'>" +
             body +
             "</prosody></voice></speak>"
     }

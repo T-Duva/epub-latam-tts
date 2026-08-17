@@ -250,7 +250,7 @@ fun ReaderScreen(
                 Slider(
                     value = state.rate,
                     onValueChange = onRate,
-                    valueRange = 0.8f..1.4f,
+                    valueRange = 0.85f..1.20f,
                 )
                 Spacer(Modifier.height(8.dp))
                 Text(

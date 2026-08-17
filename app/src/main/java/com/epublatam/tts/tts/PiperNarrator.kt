@@ -92,36 +92,36 @@ class PiperNarrator(private val context: Context) {
         player.stop()
         val engine = requireTts()
         val prepared = EnglishPronunciation.forOffline(text)
-        val chunks = StoryChunks.split(prepared, maxChars = 280)
+        val chunks = StoryChunks.splitUtterances(prepared)
         if (chunks.isEmpty()) {
             withContext(Dispatchers.Main) { onDone() }
             return
         }
-        val speed = (HumanPacing.PIPER_BASE_SPEED * rate.coerceIn(0.85f, 1.15f)).coerceIn(0.68f, 0.95f)
+        val speed = (HumanPacing.PIPER_BASE_SPEED * rate.coerceIn(0.85f, 1.15f)).coerceIn(0.65f, 0.90f)
 
         withContext(Dispatchers.IO) {
             coroutineScope {
                 var nextJob = if (chunks.size > 1) {
-                    async { runCatching { engine.generate(text = chunks[1], sid = 0, speed = speed) }.getOrNull() }
+                    async { runCatching { engine.generate(text = chunks[1].text, sid = 0, speed = speed) }.getOrNull() }
                 } else {
                     null
                 }
-                for ((index, chunk) in chunks.withIndex()) {
+                for ((index, utt) in chunks.withIndex()) {
                     if (session.get() != my) return@coroutineScope
                     withContext(Dispatchers.Main) {
                         onProgress("Leyendo ${index + 1}/${chunks.size}…")
                     }
                     val audio = if (index == 0) {
-                        engine.generate(text = chunk, sid = 0, speed = speed)
+                        engine.generate(text = utt.text, sid = 0, speed = speed)
                     } else {
-                        nextJob?.await() ?: engine.generate(text = chunk, sid = 0, speed = speed)
+                        nextJob?.await() ?: engine.generate(text = utt.text, sid = 0, speed = speed)
                     }
                     if (session.get() != my) return@coroutineScope
 
                     nextJob = if (index + 2 < chunks.size) {
                         async {
                             runCatching {
-                                engine.generate(text = chunks[index + 2], sid = 0, speed = speed)
+                                engine.generate(text = chunks[index + 2].text, sid = 0, speed = speed)
                             }.getOrNull()
                         }
                     } else {
@@ -137,7 +137,7 @@ class PiperNarrator(private val context: Context) {
                         }
                         player.playFile(wav) { session.get() == my }
                         if (session.get() == my && index < chunks.lastIndex) {
-                            delay(HumanPacing.pauseAfterEnding(chunk))
+                            delay(utt.pauseAfterMs)
                         }
                     } finally {
                         wav.delete()

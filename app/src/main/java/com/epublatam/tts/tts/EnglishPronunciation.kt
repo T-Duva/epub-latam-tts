@@ -181,26 +181,9 @@ object EnglishPronunciation {
 
 object EdgeSsmlText {
     fun body(raw: String): String {
-        val marked = EnglishPronunciation.markForEdge(raw)
-        val sb = StringBuilder()
-        var i = 0
-        while (i < marked.length) {
-            if (marked.startsWith("[[en:", i)) {
-                val end = marked.indexOf("]]", i)
-                if (end > i) {
-                    val word = marked.substring(i + 5, end)
-                    sb.append("<lang xml:lang=\"en-GB\">")
-                        .append(xmlEscape(word))
-                        .append("</lang>")
-                    i = end + 2
-                    continue
-                }
-            }
-            val next = marked.indexOf("[[en:", i).let { if (it < 0) marked.length else it }
-            sb.append(xmlEscape(marked.substring(i, next)))
-            i = next
-        }
-        return insertHumanBreaks(sb.toString())
+        // Fonética en español: <lang en-GB> resetea el pitch y vuelve el cantito.
+        val spoken = EnglishPronunciation.forOffline(raw)
+        return insertHumanBreaks(xmlEscape(spoken))
     }
 
     /**

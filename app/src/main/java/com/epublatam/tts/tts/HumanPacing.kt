@@ -1,43 +1,46 @@
 package com.epublatam.tts.tts
 
 /**
- * Tiempos de un narrador humano de ficción en español (audiolibro de misterio).
+ * Narrador humano de misterio (lectura en voz alta, no charla).
  *
- * Fuentes de magnitud (lectura en voz alta, no conversación):
- * - Conversación en español ≈ 160–180 palabras/min.
- * - Audiolibro de ficción ≈ 145–155 pal/min.
- * - Misterio / suspenso ≈ 135–145 pal/min (acá: 140).
- * - Pausa de coma / cláusula: 250–400 ms (Goldman-Eisler; Campione & Véronis).
- * - Pausa de punto / fin de enunciado: 600–800 ms.
- * - Pausa de párrafo: 900–1200 ms.
- *
- * Las pausas van DENTRO del audio (SSML). Nunca se espera a sintetizar
- * cada coma: eso es lo que parecía “80 minutos”.
+ * Actual (v1.6.5) vs esto:
+ * - Pitch -4Hz y sin contorno → cantito (el final sube). Acá: -12Hz y cadencia que cae.
+ * - Pausas solo en SSML `<break>` que Edge ignora. Acá: silencio real después de cada oración.
+ * - Chunks de 700 caracteres + 40 ms → no se oye el punto. Acá: una oración y ~850 ms de silencio.
  */
 object HumanPacing {
-    const val COMMA_MS = 320
-    const val COLON_MS = 400
-    const val PERIOD_MS = 720
-    const val QUESTION_MS = 760
-    const val PARAGRAPH_MS = 1050
+    const val COMMA_MS = 420
+    const val COLON_MS = 480
+    const val PERIOD_MS = 850
+    const val QUESTION_MS = 900
+    const val PARAGRAPH_MS = 1200
 
-    /** Edge default ~175 pal/min → 140 pal/min = 0.80. */
-    const val EDGE_RATE_FACTOR = 0.80f
-    const val EDGE_PREPARE_RATE = "-20%"
+    /** ~175 pal/min neural → ~135 pal/min narrador. */
+    const val EDGE_RATE_FACTOR = 0.78f
+    const val EDGE_PREPARE_RATE = "-22%"
+    const val EDGE_PITCH = "-12Hz"
+    const val EDGE_CONTOUR = "(0%,+0Hz) (55%,-6Hz) (100%,-18Hz)"
 
-    /** Piper: más lengthScale = más lento; speed < 1 también frena. */
-    const val PIPER_LENGTH_SCALE = 1.28f
-    const val PIPER_SILENCE_SCALE = 0.55f
-    const val PIPER_BASE_SPEED = 0.78f
+    const val PIPER_LENGTH_SCALE = 1.32f
+    const val PIPER_SILENCE_SCALE = 0.62f
+    const val PIPER_BASE_SPEED = 0.74f
 
     fun ssmlBreak(ms: Int): String = """<break time="${ms}ms"/>"""
 
-    fun pauseAfterEnding(text: String): Long {
-        val end = text.trimEnd().lastOrNull() ?: return 0L
+    fun pauseAfter(text: String, endOfParagraph: Boolean): Long {
+        if (endOfParagraph) return PARAGRAPH_MS.toLong()
+        val end = text.trimEnd().lastOrNull() ?: return COMMA_MS.toLong()
         return when (end) {
             '.', '…' -> PERIOD_MS.toLong()
             '?', '!' -> QUESTION_MS.toLong()
-            else -> 120L
+            ',', ';' -> COMMA_MS.toLong()
+            ':' -> COLON_MS.toLong()
+            else -> COMMA_MS.toLong()
         }
     }
 }
+
+data class Utterance(
+    val text: String,
+    val pauseAfterMs: Long,
+)
