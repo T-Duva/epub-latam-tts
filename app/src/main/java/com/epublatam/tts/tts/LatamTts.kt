@@ -47,18 +47,32 @@ data class TtsStatus(
     val message: String? = null,
 )
 
-/** Siempre la mejor voz disponible: Piper Daniela AR (offline, argentino real). */
+/** Mejor calidad posible: Edge Tomas AR (inglés bien) + Piper de respaldo. */
 class PersonaVoice(private val context: Context) {
+    private val edge = EdgeNarrator(context)
     private val piper = PiperNarrator(context)
+    private var usePiper = false
 
-    var lastStatus: TtsStatus = piper.status
+    var lastStatus: TtsStatus = edge.status
         private set
 
     suspend fun prepare(onProgress: (String) -> Unit = {}): TtsStatus {
-        onProgress("Preparando voz argentina…")
-        piper.prepare("Daniela · Argentina", mystery = true, onProgress = onProgress)
-        lastStatus = piper.status
-        return lastStatus
+        return try {
+            onProgress("Preparando voz argentina…")
+            edge.prepare("es-AR-TomasNeural", "Tomas · Argentina", serio = true)
+            usePiper = false
+            lastStatus = edge.status.copy(message = "Argentino · pausas naturales · inglés correcto")
+            lastStatus
+        } catch (e: Exception) {
+            Log.w("PersonaVoice", "Edge no disponible, Piper: ${e.message}")
+            onProgress("Usando voz offline…")
+            piper.prepare("Daniela · Argentina", mystery = true, onProgress = onProgress)
+            usePiper = true
+            lastStatus = piper.status.copy(
+                message = "Offline · ${e.message?.take(60) ?: "sin red"}",
+            )
+            lastStatus
+        }
     }
 
     suspend fun speak(text: String, rate: Float, onProgress: (String) -> Unit = {}, onDone: () -> Unit) {
@@ -67,12 +81,27 @@ class PersonaVoice(private val context: Context) {
             onDone()
             return
         }
-        piper.speak(cleaned, rate, onProgress, onDone)
+        if (usePiper) {
+            piper.speak(cleaned, rate, onProgress, onDone)
+        } else {
+            edge.speak(cleaned, rate, onProgress, onDone)
+        }
     }
 
-    fun stop() = piper.stop()
-    fun pause() = piper.pause()
-    fun release() = piper.release()
+    fun stop() {
+        edge.stop()
+        piper.stop()
+    }
+
+    fun pause() {
+        edge.pause()
+        piper.pause()
+    }
+
+    fun release() {
+        edge.release()
+        piper.release()
+    }
 }
 
 /** Texto para narración seria: menos “pregunta” al final, tipografía limpia. */
@@ -436,7 +465,7 @@ class EdgeNarrator(private val context: Context) {
         this.voiceName = voiceId
         this.serio = serio
         syncClockSkew()
-        val rate = if (serio) "-20%" else "-5%"
+        val rate = if (serio) "-10%" else "+0%"
         var last: Exception? = null
         repeat(3) { attempt ->
             try {
@@ -444,7 +473,7 @@ class EdgeNarrator(private val context: Context) {
                 status = TtsStatus(
                     engine = TtsEngineKind.EDGE,
                     voiceLabel = label,
-                    message = if (serio) "Argentino · tono serio y lento" else "Argentino",
+                    message = "Argentino · ritmo natural",
                 )
                 return
             } catch (e: Exception) {
@@ -539,9 +568,8 @@ class EdgeNarrator(private val context: Context) {
     }
 
     private fun toEdgeRate(userRate: Float): String {
-        // Base más lenta si es modo serio
-        val base = if (serio) 0.82f else 1.0f
-        val pct = ((userRate.coerceIn(0.7f, 1.4f) * base - 1f) * 100f).roundToInt()
+        val base = if (serio) 0.92f else 1.0f
+        val pct = ((userRate.coerceIn(0.75f, 1.35f) * base - 1f) * 100f).roundToInt()
         return if (pct >= 0) "+$pct%" else "$pct%"
     }
 
@@ -565,16 +593,13 @@ class EdgeNarrator(private val context: Context) {
         return fmt.format(Date())
     }
 
-    private fun xmlEscape(s: String): String =
-        s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
-
     private fun buildSsml(text: String, rate: String): String {
-        val escaped = xmlEscape(text)
-        val pitch = if (serio) "-8Hz" else "+0Hz"
+        val body = EdgeSsmlText.body(text)
+        val pitch = if (serio) "-4Hz" else "+0Hz"
         return "<speak version='1.0' xmlns='http://www.w3.org/2001/10/synthesis' xml:lang='es-AR'>" +
             "<voice name='$voiceName'>" +
             "<prosody pitch='$pitch' rate='$rate' volume='+0%'>" +
-            escaped +
+            body +
             "</prosody></voice></speak>"
     }
 
