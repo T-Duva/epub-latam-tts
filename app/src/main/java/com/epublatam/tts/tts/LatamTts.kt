@@ -60,25 +60,22 @@ class PersonaVoice(
         private set
 
     suspend fun prepare(): TtsStatus {
-        val key = apiKeyProvider()?.trim().orEmpty()
-            .ifBlank { BuildConfig.ELEVENLABS_API_KEY.trim() }
-            .ifBlank {
-                // respaldo pedido por el usuario
-                "sk_2d18d9523094fd4a90ecd8d5a617b5c2a5b5fe18b896022a"
-            }
+        // Prioridad: Elena Argentina (acento correcto). ElevenLabs gratis no ofrece voces AR.
         return try {
-            eleven.prepare(key)
-            // prueba corta real
-            eleven.warmUp()
-            mode = TtsEngineKind.ELEVEN
-            lastStatus = eleven.status
-            lastStatus
-        } catch (e: Exception) {
-            Log.e("PersonaVoice", "ElevenLabs falló, uso Dalia: ${e.message}")
             edge.prepare()
             mode = TtsEngineKind.EDGE
-            lastStatus = edge.status.copy(
-                message = "ElevenLabs falló (${e.message}). Usando Dalia.",
+            lastStatus = edge.status
+            lastStatus
+        } catch (e: Exception) {
+            Log.e("PersonaVoice", "Elena AR falló: ${e.message}")
+            val key = apiKeyProvider()?.trim().orEmpty()
+                .ifBlank { BuildConfig.ELEVENLABS_API_KEY.trim() }
+            if (key.isBlank()) throw e
+            eleven.prepare(key)
+            eleven.warmUp()
+            mode = TtsEngineKind.ELEVEN
+            lastStatus = eleven.status.copy(
+                message = "Respaldo ElevenLabs (no es acento argentino nativo)",
             )
             lastStatus
         }
@@ -91,18 +88,21 @@ class PersonaVoice(
             return
         }
         when (mode) {
-            TtsEngineKind.ELEVEN -> {
+            TtsEngineKind.EDGE -> {
                 try {
-                    eleven.speak(cleaned, rate, onProgress, onDone)
-                } catch (e: Exception) {
-                    Log.e("PersonaVoice", "Eleven speak fail: ${e.message}")
-                    mode = TtsEngineKind.EDGE
-                    lastStatus = edge.status.copy(message = "Cambié a Dalia: ${e.message}")
-                    edge.prepare()
                     edge.speak(cleaned, rate, onProgress, onDone)
+                } catch (e: Exception) {
+                    Log.e("PersonaVoice", "Edge speak fail: ${e.message}")
+                    val key = runCatching { apiKeyProvider()?.trim().orEmpty() }.getOrNull().orEmpty()
+                        .ifBlank { BuildConfig.ELEVENLABS_API_KEY.trim() }
+                    if (key.isBlank()) throw e
+                    eleven.prepare(key)
+                    mode = TtsEngineKind.ELEVEN
+                    lastStatus = eleven.status.copy(message = "Respaldo ElevenLabs")
+                    eleven.speak(cleaned, rate, onProgress, onDone)
                 }
             }
-            TtsEngineKind.EDGE -> edge.speak(cleaned, rate, onProgress, onDone)
+            TtsEngineKind.ELEVEN -> eleven.speak(cleaned, rate, onProgress, onDone)
         }
     }
 
@@ -434,7 +434,8 @@ class EdgeNarrator(private val context: Context) {
         private const val TAG = "EdgeNarrator"
         private const val TRUSTED_TOKEN = "6A5AA1D4EAFF4E9FB37E23D68491D6F4"
         private const val CHROMIUM = "143.0.3650.75"
-        private const val VOICE = "es-MX-DaliaNeural"
+        // Español Argentina (no México)
+        private const val VOICE = "es-AR-ElenaNeural"
         private const val WIN_EPOCH = 11_644_473_600L
     }
 
@@ -451,8 +452,8 @@ class EdgeNarrator(private val context: Context) {
 
     var status = TtsStatus(
         engine = TtsEngineKind.EDGE,
-        voiceLabel = "Dalia · México",
-        message = "Voz básica",
+        voiceLabel = "Elena · Argentina",
+        message = "Español argentino (Microsoft Neural)",
     )
         private set
 
@@ -460,8 +461,8 @@ class EdgeNarrator(private val context: Context) {
         synthesizePlain("Listo.", "-5%")
         status = TtsStatus(
             engine = TtsEngineKind.EDGE,
-            voiceLabel = "Dalia · México",
-            message = "Voz básica (Microsoft)",
+            voiceLabel = "Elena · Argentina",
+            message = "Acento argentino · necesita internet",
         )
     }
 

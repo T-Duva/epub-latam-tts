@@ -79,7 +79,7 @@ fun LibraryScreen(
                 .padding(16.dp),
         ) {
             Text(
-                "Voz ElevenLabs ya viene cargada. Tocá + para importar un EPUB e internet para escuchar.",
+                "Voz Elena · Argentina (acento argentino). Tocá + para importar un EPUB. Necesita internet.",
                 style = MaterialTheme.typography.bodyMedium,
             )
             Spacer(Modifier.height(8.dp))
