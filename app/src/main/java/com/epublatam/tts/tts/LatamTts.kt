@@ -156,29 +156,40 @@ object MysteryText {
 }
 
 object StoryChunks {
-    fun splitUtterances(raw: String): List<Utterance> {
+    /**
+     * Párrafos / varias oraciones juntas para que el TTS respire solo
+     * (timing natural). No una oración = un archivo = un silencio eterno.
+     */
+    fun splitPassages(raw: String, maxChars: Int = 560): List<String> {
         val t = raw.trim()
         if (t.isEmpty()) return emptyList()
-        val out = mutableListOf<Utterance>()
+        val out = mutableListOf<String>()
         val paragraphs = t.split(Regex("\\n{2,}")).map { it.trim() }.filter { it.isNotEmpty() }
         for (p in paragraphs) {
-            val sentences = splitSentences(p.replace('\n', ' '), maxChars = 320)
-            for ((i, s) in sentences.withIndex()) {
-                val last = i == sentences.lastIndex
-                out += Utterance(s, HumanPacing.pauseAfter(s, endOfParagraph = last))
+            val flat = p.replace('\n', ' ').replace(Regex(" {2,}"), " ")
+            if (flat.length <= maxChars) {
+                out += flat
+                continue
             }
-        }
-        if (out.isNotEmpty()) {
-            val last = out.removeAt(out.lastIndex)
-            out += last.copy(pauseAfterMs = 0L)
+            val sentences = splitSentences(flat, maxChars)
+            val buf = StringBuilder()
+            for (s in sentences) {
+                if (buf.isNotEmpty() && buf.length + 1 + s.length > maxChars) {
+                    out += buf.toString().trim()
+                    buf.clear()
+                }
+                if (buf.isNotEmpty()) buf.append(' ')
+                buf.append(s)
+            }
+            if (buf.isNotEmpty()) out += buf.toString().trim()
         }
         return out
     }
 
-    fun split(raw: String, maxChars: Int = 700): List<String> =
-        splitUtterances(raw).map { it.text }.ifEmpty {
-            splitSentences(raw, maxChars)
-        }
+    fun splitUtterances(raw: String): List<Utterance> =
+        splitPassages(raw).map { Utterance(it, 0L) }
+
+    fun split(raw: String, maxChars: Int = 700): List<String> = splitPassages(raw, maxChars)
 
     private fun splitSentences(text: String, maxChars: Int): List<String> {
         val sentences = text.split(Regex("(?<=[.!?…])\\s+")).map { it.trim() }.filter { it.isNotEmpty() }
@@ -548,7 +559,7 @@ class EdgeNarrator(private val context: Context) {
     ) {
         val my = session.incrementAndGet()
         player.stop()
-        val chunks = StoryChunks.splitUtterances(text)
+        val chunks = StoryChunks.splitPassages(text)
         if (chunks.isEmpty()) {
             withContext(Dispatchers.Main) { onDone() }
             return
@@ -556,33 +567,29 @@ class EdgeNarrator(private val context: Context) {
         val edgeRate = toEdgeRate(rate)
         withContext(Dispatchers.IO) {
             coroutineScope {
-                var nextJob = if (chunks.size > 1) {
-                    async { runCatching { synthesizePlain(chunks[1].text, edgeRate) }.getOrNull() }
-                } else {
-                    null
+                val jobs = MutableList(chunks.size) { null as kotlinx.coroutines.Deferred<ByteArray?>? }
+                jobs[0] = async { runCatching { synthesizePlain(chunks[0], edgeRate) }.getOrNull() }
+                if (chunks.size > 1) {
+                    jobs[1] = async { runCatching { synthesizePlain(chunks[1], edgeRate) }.getOrNull() }
                 }
-                for ((index, utt) in chunks.withIndex()) {
+                for (index in chunks.indices) {
                     if (session.get() != my) return@coroutineScope
                     withContext(Dispatchers.Main) {
                         onProgress("Leyendo ${index + 1}/${chunks.size}…")
                     }
-                    val audio = if (index == 0) synthesizePlain(utt.text, edgeRate)
-                    else nextJob?.await() ?: synthesizePlain(utt.text, edgeRate)
-                    if (session.get() != my) return@coroutineScope
-
-                    nextJob = if (index + 2 < chunks.size) {
-                        async { runCatching { synthesizePlain(chunks[index + 2].text, edgeRate) }.getOrNull() }
-                    } else {
-                        null
+                    val audio = jobs[index]?.await() ?: synthesizePlain(chunks[index], edgeRate)
+                    jobs[index] = null
+                    if (index + 2 < chunks.size && jobs[index + 2] == null) {
+                        jobs[index + 2] = async {
+                            runCatching { synthesizePlain(chunks[index + 2], edgeRate) }.getOrNull()
+                        }
                     }
-
+                    if (session.get() != my) return@coroutineScope
+                    if (audio.isEmpty()) continue
                     val file = File(cacheDir, "d_${UUID.randomUUID()}.mp3")
                     file.writeBytes(audio)
                     try {
                         player.playFile(file) { session.get() == my }
-                        if (session.get() == my && index < chunks.lastIndex) {
-                            delay(utt.pauseAfterMs)
-                        }
                     } finally {
                         file.delete()
                     }
@@ -624,8 +631,7 @@ class EdgeNarrator(private val context: Context) {
         val body = EdgeSsmlText.body(text)
         return "<speak version='1.0' xmlns='http://www.w3.org/2001/10/synthesis' xml:lang='es-AR'>" +
             "<voice name='$voiceName'>" +
-            "<prosody pitch='${HumanPacing.EDGE_PITCH}' rate='$rate' " +
-            "contour='${HumanPacing.EDGE_CONTOUR}' volume='+0%'>" +
+            "<prosody pitch='${HumanPacing.EDGE_PITCH}' rate='$rate' volume='+0%'>" +
             body +
             "</prosody></voice></speak>"
     }
