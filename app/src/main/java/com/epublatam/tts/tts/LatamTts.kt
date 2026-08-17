@@ -42,6 +42,30 @@ import kotlin.math.roundToInt
 
 enum class TtsEngineKind { ELEVEN, EDGE }
 
+enum class VoiceMode {
+    /** Brian profundo + español forzado: más alma para misterio */
+    MISTERIO,
+    /** Tomas argentino, tono grave y lento */
+    TOMAS_AR,
+    /** Elena argentina, más grave/lenta que el default */
+    ELENA_AR,
+    ;
+
+    fun id(): String = when (this) {
+        MISTERIO -> "misterio"
+        TOMAS_AR -> "tomas_ar"
+        ELENA_AR -> "elena_ar"
+    }
+
+    companion object {
+        fun fromId(id: String?): VoiceMode = when (id) {
+            "tomas_ar" -> TOMAS_AR
+            "elena_ar" -> ELENA_AR
+            else -> MISTERIO
+        }
+    }
+}
+
 data class TtsStatus(
     val engine: TtsEngineKind,
     val voiceLabel: String,
@@ -51,58 +75,62 @@ data class TtsStatus(
 class PersonaVoice(
     private val context: Context,
     private val apiKeyProvider: suspend () -> String?,
+    private val modeProvider: suspend () -> VoiceMode,
 ) {
     private val edge = EdgeNarrator(context)
     private val eleven = ElevenNarrator(context)
     private var mode: TtsEngineKind = TtsEngineKind.EDGE
+    private var voiceMode: VoiceMode = VoiceMode.MISTERIO
 
     var lastStatus: TtsStatus = edge.status
         private set
 
     suspend fun prepare(): TtsStatus {
-        // Prioridad: Elena Argentina (acento correcto). ElevenLabs gratis no ofrece voces AR.
-        return try {
-            edge.prepare()
-            mode = TtsEngineKind.EDGE
-            lastStatus = edge.status
-            lastStatus
-        } catch (e: Exception) {
-            Log.e("PersonaVoice", "Elena AR falló: ${e.message}")
-            val key = apiKeyProvider()?.trim().orEmpty()
-                .ifBlank { BuildConfig.ELEVENLABS_API_KEY.trim() }
-            if (key.isBlank()) throw e
-            eleven.prepare(key)
-            eleven.warmUp()
-            mode = TtsEngineKind.ELEVEN
-            lastStatus = eleven.status.copy(
-                message = "Respaldo ElevenLabs (no es acento argentino nativo)",
-            )
-            lastStatus
+        voiceMode = modeProvider()
+        return when (voiceMode) {
+            VoiceMode.MISTERIO -> prepareMisterio()
+            VoiceMode.TOMAS_AR -> prepareEdge("es-AR-TomasNeural", "Tomas · Argentina", serio = true)
+            VoiceMode.ELENA_AR -> prepareEdge("es-AR-ElenaNeural", "Elena · Argentina", serio = true)
         }
     }
 
+    private suspend fun prepareMisterio(): TtsStatus {
+        val key = apiKeyProvider()?.trim().orEmpty()
+            .ifBlank { BuildConfig.ELEVENLABS_API_KEY.trim() }
+            .ifBlank { "sk_2d18d9523094fd4a90ecd8d5a617b5c2a5b5fe18b896022a" }
+        return try {
+            eleven.prepare(key, mystery = true)
+            eleven.warmUp()
+            mode = TtsEngineKind.ELEVEN
+            lastStatus = eleven.status
+            lastStatus
+        } catch (e: Exception) {
+            Log.e("PersonaVoice", "Misterio falló, Tomas AR: ${e.message}")
+            prepareEdge("es-AR-TomasNeural", "Tomas · Argentina", serio = true)
+        }
+    }
+
+    private suspend fun prepareEdge(voiceId: String, label: String, serio: Boolean): TtsStatus {
+        edge.prepare(voiceId, label, serio)
+        mode = TtsEngineKind.EDGE
+        lastStatus = edge.status
+        return lastStatus
+    }
+
     suspend fun speak(text: String, rate: Float, onProgress: (String) -> Unit = {}, onDone: () -> Unit) {
-        val cleaned = text.trim()
+        val cleaned = MysteryText.prepare(text)
         if (cleaned.length < 3) {
             onDone()
             return
         }
+        // Misterio: un poco más lento
+        val effectiveRate = when (voiceMode) {
+            VoiceMode.MISTERIO -> rate * 0.88f
+            VoiceMode.TOMAS_AR, VoiceMode.ELENA_AR -> rate * 0.85f
+        }
         when (mode) {
-            TtsEngineKind.EDGE -> {
-                try {
-                    edge.speak(cleaned, rate, onProgress, onDone)
-                } catch (e: Exception) {
-                    Log.e("PersonaVoice", "Edge speak fail: ${e.message}")
-                    val key = runCatching { apiKeyProvider()?.trim().orEmpty() }.getOrNull().orEmpty()
-                        .ifBlank { BuildConfig.ELEVENLABS_API_KEY.trim() }
-                    if (key.isBlank()) throw e
-                    eleven.prepare(key)
-                    mode = TtsEngineKind.ELEVEN
-                    lastStatus = eleven.status.copy(message = "Respaldo ElevenLabs")
-                    eleven.speak(cleaned, rate, onProgress, onDone)
-                }
-            }
-            TtsEngineKind.ELEVEN -> eleven.speak(cleaned, rate, onProgress, onDone)
+            TtsEngineKind.ELEVEN -> eleven.speak(cleaned, effectiveRate, onProgress, onDone)
+            TtsEngineKind.EDGE -> edge.speak(cleaned, effectiveRate, onProgress, onDone)
         }
     }
 
@@ -119,6 +147,27 @@ class PersonaVoice(
     fun release() {
         edge.release()
         eleven.release()
+    }
+}
+
+/** Texto para narración seria: menos “pregunta” al final, tipografía limpia. */
+object MysteryText {
+    fun prepare(raw: String): String {
+        var t = raw
+            .replace('\u00A0', ' ')
+            .replace(Regex("[\\t\\x0B\\f\\r]+"), " ")
+            .replace(Regex("\\n{3,}"), "\n\n")
+            .replace('…', '.')
+            .replace('–', ',')
+            .replace('—', ',')
+            .replace(Regex("([.!?;:,])(?=\\S)"), "$1 ")
+            .replace(Regex(" {2,}"), " ")
+            .trim()
+        // Evita entonación interrogativa falsa en títulos/frases mal puntuadas
+        if (t.count { it == '?' } == 1 && t.length > 80 && !t.trimStart().startsWith("¿")) {
+            t = t.replace('?', '.')
+        }
+        return t
     }
 }
 
@@ -279,9 +328,8 @@ private class AudioPlayer(private val context: Context) {
 class ElevenNarrator(private val context: Context) {
     companion object {
         private const val TAG = "ElevenNarrator"
-        // Jessica: más neutra. Con language_code=es evita acento inglés en palabras latinas.
-        private const val VOICE_ID = "cgSgspJ2msm6clMCkdW9"
-        // flash_v2_5 soporta language_code (multilingual_v2 no lo respeta bien con voces EN)
+        // Brian: profundo, serio — mejor para misterio que voces “light”
+        private const val VOICE_MYSTERY = "nPczCjzI2devNBz1zQrb"
         private const val MODEL = "eleven_flash_v2_5"
         private const val LANGUAGE = "es"
     }
@@ -295,20 +343,24 @@ class ElevenNarrator(private val context: Context) {
     private val session = AtomicInteger(0)
     private val cacheDir = File(context.cacheDir, "eleven_voice").also { it.mkdirs() }
     private var apiKey: String = ""
+    private var voiceId: String = VOICE_MYSTERY
+    private var mystery = true
 
     var status = TtsStatus(
         engine = TtsEngineKind.ELEVEN,
-        voiceLabel = "Jessica · español",
-        message = "Voz con alma · pronunciación en español",
+        voiceLabel = "Brian · misterio",
+        message = "Narración seria con alma",
     )
         private set
 
-    fun prepare(key: String) {
+    fun prepare(key: String, mystery: Boolean = true) {
         apiKey = key
+        this.mystery = mystery
+        voiceId = VOICE_MYSTERY
         status = TtsStatus(
             engine = TtsEngineKind.ELEVEN,
-            voiceLabel = "Jessica · español",
-            message = "Pronunciación forzada a español (no inglés)",
+            voiceLabel = "Brian · misterio",
+            message = "Tono grave y serio · español forzado",
         )
     }
 
@@ -372,15 +424,11 @@ class ElevenNarrator(private val context: Context) {
     }
 
     private fun synthesize(text: String): ByteArray {
-        // Normaliza tipografía para que el motor no “piense” en inglés
-        val spanish = text
-            .replace('…', '.')
-            .replace('–', '-')
-            .replace('—', ',')
+        val spanish = MysteryText.prepare(text)
             .replace('"', '«')
-            .replace('"', '»')
             .trim()
 
+        // Más estabilidad = menos teatral alegre, más serio
         val body = JSONObject()
             .put("text", spanish)
             .put("model_id", MODEL)
@@ -388,14 +436,14 @@ class ElevenNarrator(private val context: Context) {
             .put(
                 "voice_settings",
                 JSONObject()
-                    .put("stability", 0.40)
-                    .put("similarity_boost", 0.78)
+                    .put("stability", if (mystery) 0.62 else 0.40)
+                    .put("similarity_boost", 0.80)
                     .put("use_speaker_boost", true),
             )
             .toString()
 
         val request = Request.Builder()
-            .url("https://api.elevenlabs.io/v1/text-to-speech/$VOICE_ID?output_format=mp3_44100_128")
+            .url("https://api.elevenlabs.io/v1/text-to-speech/$voiceId?output_format=mp3_44100_128")
             .addHeader("xi-api-key", apiKey)
             .addHeader("Accept", "audio/mpeg")
             .addHeader("Content-Type", "application/json")
@@ -434,8 +482,7 @@ class EdgeNarrator(private val context: Context) {
         private const val TAG = "EdgeNarrator"
         private const val TRUSTED_TOKEN = "6A5AA1D4EAFF4E9FB37E23D68491D6F4"
         private const val CHROMIUM = "143.0.3650.75"
-        // Español Argentina (no México)
-        private const val VOICE = "es-AR-ElenaNeural"
+        // Español Argentina — se elige en prepare()
         private const val WIN_EPOCH = 11_644_473_600L
     }
 
@@ -449,20 +496,26 @@ class EdgeNarrator(private val context: Context) {
     private val player = AudioPlayer(context)
     private val session = AtomicInteger(0)
     private val cacheDir = File(context.cacheDir, "edge_voice").also { it.mkdirs() }
+    private var voiceName: String = "es-AR-TomasNeural"
+    private var serio: Boolean = true
 
     var status = TtsStatus(
         engine = TtsEngineKind.EDGE,
-        voiceLabel = "Elena · Argentina",
-        message = "Español argentino (Microsoft Neural)",
+        voiceLabel = "Tomas · Argentina",
+        message = "Argentino serio",
     )
         private set
 
-    suspend fun prepare() {
-        synthesizePlain("Listo.", "-5%")
+    suspend fun prepare(voiceId: String, label: String, serio: Boolean) {
+        this.voiceName = voiceId
+        this.serio = serio
+        // Grave y lento para bajar el “cantito” final
+        val rate = if (serio) "-20%" else "-5%"
+        synthesizePlain("Listo.", rate)
         status = TtsStatus(
             engine = TtsEngineKind.EDGE,
-            voiceLabel = "Elena · Argentina",
-            message = "Acento argentino · necesita internet",
+            voiceLabel = label,
+            message = if (serio) "Argentino · tono serio y lento" else "Argentino",
         )
     }
 
@@ -519,7 +572,9 @@ class EdgeNarrator(private val context: Context) {
     }
 
     private fun toEdgeRate(userRate: Float): String {
-        val pct = ((userRate.coerceIn(0.7f, 1.4f) - 1f) * 100f).roundToInt()
+        // Base más lenta si es modo serio
+        val base = if (serio) 0.82f else 1.0f
+        val pct = ((userRate.coerceIn(0.7f, 1.4f) * base - 1f) * 100f).roundToInt()
         return if (pct >= 0) "+$pct%" else "$pct%"
     }
 
@@ -548,9 +603,10 @@ class EdgeNarrator(private val context: Context) {
 
     private fun buildSsml(text: String, rate: String): String {
         val escaped = xmlEscape(text)
-        return "<speak version='1.0' xmlns='http://www.w3.org/2001/10/synthesis' xml:lang='en-US'>" +
-            "<voice name='$VOICE'>" +
-            "<prosody pitch='+0Hz' rate='$rate' volume='+0%'>" +
+        val pitch = if (serio) "-8Hz" else "+0Hz"
+        return "<speak version='1.0' xmlns='http://www.w3.org/2001/10/synthesis' xml:lang='es-AR'>" +
+            "<voice name='$voiceName'>" +
+            "<prosody pitch='$pitch' rate='$rate' volume='+0%'>" +
             escaped +
             "</prosody></voice></speak>"
     }

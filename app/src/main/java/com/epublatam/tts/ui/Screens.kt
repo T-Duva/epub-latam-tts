@@ -27,6 +27,7 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -48,6 +49,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.epublatam.tts.ReaderUiState
 import com.epublatam.tts.data.BookMeta
+import com.epublatam.tts.tts.VoiceMode
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -56,11 +58,13 @@ fun LibraryScreen(
     busy: Boolean,
     message: String?,
     elevenKey: String,
+    voiceMode: VoiceMode,
     onAdd: () -> Unit,
     onOpen: (BookMeta) -> Unit,
     onDelete: (BookMeta) -> Unit,
     onDismissMessage: () -> Unit,
     onSaveElevenKey: (String) -> Unit,
+    onVoiceMode: (VoiceMode) -> Unit,
 ) {
     var keyDraft by remember(elevenKey) { mutableStateOf(elevenKey) }
 
@@ -79,16 +83,33 @@ fun LibraryScreen(
                 .padding(16.dp),
         ) {
             Text(
-                "Voz Elena · Argentina (acento argentino). Tocá + para importar un EPUB. Necesita internet.",
+                "Elegí el estilo de narración. Para misterio usá el primero (más alma, tono grave).",
                 style = MaterialTheme.typography.bodyMedium,
             )
             Spacer(Modifier.height(8.dp))
-            // Campo opcional por si querés cambiar la clave después
+            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                FilterChip(
+                    selected = voiceMode == VoiceMode.MISTERIO,
+                    onClick = { onVoiceMode(VoiceMode.MISTERIO) },
+                    label = { Text("Misterio") },
+                )
+                FilterChip(
+                    selected = voiceMode == VoiceMode.TOMAS_AR,
+                    onClick = { onVoiceMode(VoiceMode.TOMAS_AR) },
+                    label = { Text("Tomas AR") },
+                )
+                FilterChip(
+                    selected = voiceMode == VoiceMode.ELENA_AR,
+                    onClick = { onVoiceMode(VoiceMode.ELENA_AR) },
+                    label = { Text("Elena AR") },
+                )
+            }
+            Spacer(Modifier.height(8.dp))
             OutlinedTextField(
                 value = keyDraft,
                 onValueChange = { keyDraft = it },
                 modifier = Modifier.fillMaxWidth(),
-                label = { Text("Clave ElevenLabs (ya configurada)") },
+                label = { Text("Clave ElevenLabs (para Misterio)") },
                 singleLine = true,
                 visualTransformation = PasswordVisualTransformation(),
             )

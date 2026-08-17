@@ -24,6 +24,7 @@ data class BookMeta(
 class BookStore(private val context: Context) {
     private val booksKey = stringPreferencesKey("books_json")
     private val elevenKey = stringPreferencesKey("elevenlabs_api_key")
+    private val voiceModeKey = stringPreferencesKey("voice_mode")
     private val booksDir: File
         get() = File(context.filesDir, "books").also { it.mkdirs() }
 
@@ -36,6 +37,14 @@ class BookStore(private val context: Context) {
 
     suspend fun setElevenLabsKey(key: String) {
         context.dataStore.edit { it[elevenKey] = key.trim() }
+    }
+
+    /** misterio | tomas_ar | elena_ar */
+    suspend fun getVoiceMode(): String =
+        context.dataStore.data.first()[voiceModeKey] ?: "misterio"
+
+    suspend fun setVoiceMode(mode: String) {
+        context.dataStore.edit { it[voiceModeKey] = mode }
     }
 
     suspend fun listBooks(): List<BookMeta> = books.first()

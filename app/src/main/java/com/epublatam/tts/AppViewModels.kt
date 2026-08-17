@@ -12,6 +12,7 @@ import com.epublatam.tts.epub.EpubImporter
 import com.epublatam.tts.epub.EpubParser
 import com.epublatam.tts.tts.PersonaVoice
 import com.epublatam.tts.tts.TtsStatus
+import com.epublatam.tts.tts.VoiceMode
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
@@ -43,6 +44,8 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
     val message = _message.asStateFlow()
     private val _elevenKey = MutableStateFlow("")
     val elevenKey = _elevenKey.asStateFlow()
+    private val _voiceMode = MutableStateFlow(VoiceMode.MISTERIO)
+    val voiceMode = _voiceMode.asStateFlow()
 
     init {
         viewModelScope.launch {
@@ -52,11 +55,24 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
                 store.setElevenLabsKey(key)
             }
             _elevenKey.value = key
+            _voiceMode.value = VoiceMode.fromId(store.getVoiceMode())
         }
     }
 
     fun clearMessage() {
         _message.value = null
+    }
+
+    fun setVoiceMode(mode: VoiceMode) {
+        viewModelScope.launch {
+            store.setVoiceMode(mode.id())
+            _voiceMode.value = mode
+            _message.value = when (mode) {
+                VoiceMode.MISTERIO -> "Modo misterio (Brian, más alma)."
+                VoiceMode.TOMAS_AR -> "Modo Tomas argentino serio."
+                VoiceMode.ELENA_AR -> "Modo Elena argentina."
+            }
+        }
     }
 
     fun saveElevenKey(key: String) {
@@ -101,7 +117,11 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
 
 class ReaderViewModel(app: Application) : AndroidViewModel(app) {
     private val store = BookStore(app)
-    private val voice = PersonaVoice(app) { store.getElevenLabsKey() }
+    private val voice = PersonaVoice(
+        app,
+        apiKeyProvider = { store.getElevenLabsKey() },
+        modeProvider = { VoiceMode.fromId(store.getVoiceMode()) },
+    )
     private val _state = MutableStateFlow(ReaderUiState())
     val state: StateFlow<ReaderUiState> = _state.asStateFlow()
     private var speakJob: Job? = null
