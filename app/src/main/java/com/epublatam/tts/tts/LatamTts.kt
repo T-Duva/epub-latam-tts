@@ -67,7 +67,7 @@ class PersonaVoice(private val context: Context) {
             onDone()
             return
         }
-        piper.speak(cleaned, rate * 0.85f, onProgress, onDone)
+        piper.speak(cleaned, rate, onProgress, onDone)
     }
 
     fun stop() = piper.stop()
